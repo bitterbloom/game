@@ -1,0 +1,10 @@
+### Git Ignore
+
+# Project
+bin/
+
+# Nix
+result*
+.envrc
+.direnv/
+
