@@ -32,7 +32,7 @@ jobs:
           rm raylib.zip
       - name: Build
         run: |
-          export RAYLIB_PATH=$(pwd)/raylib
+          export RAYLIB_PATH=$(pwd)/raylib/raylib-5.0_win64_mingw-w64
           export CC=gcc
           make build
 
