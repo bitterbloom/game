@@ -5,7 +5,7 @@ ifeq ($(OS),Windows_NT)
 	_WINDOWS = set
 	ifeq ($(RAYLIB_PATH),)
 	else
-		_CFLAGS = $(CFLAGS) -I$(RAYLIB_PATH)/src -L$(RAYLIB_PATH)/src -lraylib -lgdi32 -lwinmm
+		_CFLAGS = $(CFLAGS) -I$(RAYLIB_PATH)/include -L$(RAYLIB_PATH)/lib -lraylib -lgdi32 -lwinmm
 	endif
 else
 	UNAME_S := $(shell uname -s)
@@ -25,7 +25,7 @@ help:
 	@echo -e "  make clean\t- Clean the object files and bin directory"
 
 build: src/*
-	$(if $(_CFLAGS),$(),$(if $(_WINDOWS),$(error Please set RAYLIB_PATH to the path of your Raylib installation either by setting it as an environment variable using `set RAYLIB_PATH=path/to/your/raylib/raylib` or by using `make RAYLIB_PATH=path/to/your/raylib/raylib`),$()))
+	$(if $(_CFLAGS),$(),$(if $(_WINDOWS),$(error Please set RAYLIB_PATH to the path of your Raylib installation either by setting it as an environment variable using `set RAYLIB_PATH=path/to/your/raylib/raylib-5.0_win64_mingw-w64` or by using `make RAYLIB_PATH=path/to/your/raylib/raylib-5.0_win64_mingw-w64`),$()))
 	@echo -e "Building executable ..."
 	@mkdir -p bin
 	$(CC) src/main.c src/game.c -o bin/game $(_CFLAGS) -Wl,-rpath,./bin
