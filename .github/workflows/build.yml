@@ -20,6 +20,9 @@ jobs:
     name: windows-x86
     runs-on: windows-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v3
       - name: Download Raylib
@@ -28,6 +31,8 @@ jobs:
           7z x raylib.zip -oraylib
       - name: Build
         run: |
-          set RAYLIB_PATH=raylib
+          pwd
+          ls
+          export RAYLIB_PATH=$(pwd)/raylib
           make build
 
