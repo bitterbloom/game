@@ -29,10 +29,10 @@ jobs:
         run: |
           curl -L https://github.com/raysan5/raylib/releases/download/5.0/raylib-5.0_win64_mingw-w64.zip -o raylib.zip
           7z x raylib.zip -oraylib
+          rm raylib.zip
       - name: Build
         run: |
-          pwd
-          ls
           export RAYLIB_PATH=$(pwd)/raylib
+          export CC=gcc
           make build
 
