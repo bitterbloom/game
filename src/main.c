@@ -62,14 +62,14 @@
         }
 
         if (modified) {
-            // If compilation fails, the game will continue to run the old code.
+            modified = false
             if (system("make bin/game.so")) {
+                // If compilation fails, the game will continue to run the old code.
                 fprintf(stderr, "Failed to build game.so: %s\n", strerror(errno));
                 modified = false;
                 return game_draw;
             }
             dlclose(game_so);
-            modified = false;
             goto do_reload;
         }
 
@@ -79,7 +79,6 @@
         return game_draw;
 
     do_reload:
-
         printf("Loading game.so...\n");
 
         game_so = dlopen("game.so", RTLD_NOW);
