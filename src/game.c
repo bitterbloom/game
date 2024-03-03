@@ -6,6 +6,8 @@
 
 #include "./game.h"
 
+typedef unsigned int uint;
+
 typedef enum {
     TITLE_SCREEN,
     GAME_SCREEN,
