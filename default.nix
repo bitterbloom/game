@@ -1,8 +1,11 @@
 { pkgs ? import <nixpkgs> {} }:
 pkgs.stdenv.mkDerivation {
 
-  name = "multiplayer-game";
-  src = ./multiplayer-game;
+  name = "game";
+  src = fetchGit {
+    url = ./.;
+    shallow = true;
+  };
 
   nativeBuildInputs = with pkgs; [
     gnumake
@@ -16,7 +19,7 @@ pkgs.stdenv.mkDerivation {
 
   installPhase = ''
     mkdir -p $out/bin
-    cp ./bin/multiplayer-game $out/bin
+    cp ./bin/game $out/bin
   '';
 
   shellHook = ''

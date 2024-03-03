@@ -17,22 +17,23 @@ bin/game.so: src/game.c
 build: src/* bin/game.so
 	@echo -e "Building executable ..."
 	@mkdir -p bin
-	@$(CC) src/main.c src/game.c -o bin/multiplayer-game $(CFLAGS) -Wl,-rpath,./bin
+	@$(CC) src/main.c src/game.c -o bin/game $(CFLAGS) -Wl,-rpath,./bin
 
 run: build
 	@echo -e "Running executable ..."
-	@bin/multiplayer-game
+	@bin/game
 
 debug: src/* bin/game.so
 	@echo -e "Building executable with debug mode ..."
 	@mkdir -p bin
-	@$(CC) src/main.c src/game.c -o bin/multiplayer-game $(CFLAGS) -DDEBUG -Wl,-rpath,./bin
+	@$(CC) src/main.c src/game.c -o bin/game-debug $(CFLAGS) -DDEBUG -Wl,-rpath,./bin
 	@echo -e "Copying shared object ..."
 	@echo -e "Running executable ..."
-	@bin/multiplayer-game
+	@bin/game-debug
 
 clean:
-	@echo -e "Deleting object files and bin directory ..."
-	@rm -f obj/*.o -r
+	@echo -e "Deleting build files ..."
+	@rm -f bin/ -r
+	@rm -f result
 
 .PHONY: help build run debug clean
