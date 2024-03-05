@@ -5,13 +5,13 @@ ifeq ($(OS),Windows_NT)
 	_WINDOWS = set
 	ifeq ($(RAYLIB_PATH),)
 	else
-		_CFLAGS = $(CFLAGS) -I$(RAYLIB_PATH)/include -L$(RAYLIB_PATH)/lib -lraylib -lgdi32 -lwinmm
+		_CFLAGS = $(CFLAGS) --std=c2x -I$(RAYLIB_PATH)/include -L$(RAYLIB_PATH)/lib -lraylib -lgdi32 -lwinmm
 	endif
 else
 	UNAME_S := $(shell uname -s)
 	ifeq ($(UNAME_S),Linux)
 		_LINUX = set
-		_CFLAGS = $(CFLAGS) -lraylib -Wl,-rpath,./bin
+		_CFLAGS = $(CFLAGS) --std=c2x -lraylib -Wl,-rpath,./bin
 		_DEBUG = set
 	endif
 endif
