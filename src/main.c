@@ -44,12 +44,12 @@
         }
     }
 
-    // Returns a pointer to the game_draw function dynamically loaded from game.so.
+    // Returns a pointer to the game_update function dynamically loaded from game.so.
     // If a file depended on by game.so is modified, game.so is rebuild and reloaded.
     // (Uses static variables)
-    static game_draw_t *debug_reload(Gamestate *const state) {
+    static game_update_t *debug_reload(Gamestate *const state) {
         static void *game_so = NULL; // Shared object handle to game.so
-        static game_draw_t *game_draw = NULL;
+        static game_update_t *game_update = NULL;
         static pthread_t watcher_id;
         static bool modified = false;
 
@@ -62,21 +62,23 @@
         }
 
         if (modified) {
-            modified = false
+            modified = false;
             if (system("make bin/game.so")) {
                 // If compilation fails, the game will continue to run the old code.
                 fprintf(stderr, "Failed to build game.so: %s\n", strerror(errno));
                 modified = false;
-                return game_draw;
+                return game_update;
             }
             dlclose(game_so);
             goto do_reload;
         }
 
-        if (game_should_debug_reload(state))
+        if (game_should_debug_reload(state)) {
+            dlclose(game_so);
             goto do_reload;
+        }
 
-        return game_draw;
+        return game_update;
 
     do_reload:
         printf("Loading game.so...\n");
@@ -87,15 +89,15 @@
             exit(EXIT_FAILURE);
         }
 
-        game_draw = dlsym(game_so, "game_draw");
-        if (game_draw == NULL) {
-            fprintf(stderr, "Failed to load game_draw: %s\n", dlerror());
+        game_update = dlsym(game_so, "game_update");
+        if (game_update == NULL) {
+            fprintf(stderr, "Failed to load game_update: %s\n", dlerror());
             exit(EXIT_FAILURE);
         }
 
         printf("Loaded game.so\n");
 
-        return game_draw;
+        return game_update;
     }
 #endif // DEBUG
 
@@ -104,14 +106,14 @@ int main(int const argc, char const *const *const argv) {
     Gamestate *const state = game_init();
 
 #ifdef DEBUG
-    game_draw_t *game_draw = debug_reload(state);
+    game_update_t *game_update = debug_reload(state);
 #endif
 
     while (!game_should_close(state)) {
-        game_draw(state);
+        game_update(state);
 
 #ifdef DEBUG
-        game_draw = debug_reload(state);
+        game_update = debug_reload(state);
 #endif
     }
 

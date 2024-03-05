@@ -28,7 +28,7 @@ build: src/*
 	$(if $(_CFLAGS),$(),$(if $(_WINDOWS),$(error Please set RAYLIB_PATH to the path of your Raylib installation either by setting it as an environment variable using `set RAYLIB_PATH=path/to/your/raylib/raylib-5.0_win64_mingw-w64` or by using `make RAYLIB_PATH=path/to/your/raylib/raylib-5.0_win64_mingw-w64`),$()))
 	@echo -e "Building executable ..."
 	@mkdir -p bin
-	$(CC) src/main.c src/game.c -o bin/game $(_CFLAGS) -Wl,-rpath,./bin
+	$(CC) src/main.c src/game.c src/net.c -o bin/game $(_CFLAGS) -Wl,-rpath,./bin
 
 run: build
 	@echo -e "Running executable ..."
@@ -38,7 +38,7 @@ ifeq ($(_DEBUG),set)
 bin/game.so: src/game.c
 	@echo -e "Building game.so ..."
 	@mkdir -p bin
-	$(CC) src/game.c -shared -o bin/game.so $(_CFLAGS)
+	$(CC) src/game.c src/net.c -fpic -shared -o bin/game.so $(_CFLAGS)
 
 debug: src/* bin/game.so
 	@echo -e "Building executable with debug mode ..."
