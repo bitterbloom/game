@@ -451,7 +451,7 @@ void net_client_create(uint16_t port, ClientData *data) {
     addr.sin_port = htons(port);
 
     // connect to local machine at specified port
-    char addrstr[NI_MAXHOST + NI_MAXSERV + 1];
+    char addrstr[32];
     snprintf(addrstr, sizeof (addrstr), "127.0.0.1:%d", port);
 
     // parse into address
