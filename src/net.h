@@ -16,7 +16,7 @@ void net_server_create(uint16_t port, ServerData *data);
 
 typedef struct ClientData ClientData;
 
-ClientData *net_client_data_new(Player const *player);
+ClientData *net_client_data_new(Player *player);
 
 void net_client_data_destroy(ClientData *data);
 

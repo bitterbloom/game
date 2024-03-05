@@ -83,6 +83,9 @@ static void goto_game_screen(Gamestate *const state, bool const hosting) {
         net_server_create(state->gs_net_port, state->gss_serv_data);
     }
     else {
+        state->gsc_player.id = 0;
+        state->gsc_player.x = 0;
+        state->gsc_player.y = 0;
         state->gsc_clnt_data = net_client_data_new(&state->gsc_player);
         net_client_create(state->gs_net_port, state->gsc_clnt_data);
     }
@@ -159,32 +162,35 @@ static void draw_title_screen(Gamestate const *const state) {
 static void draw_game_screen(Gamestate const *const state) {
     ClearBackground(ColorFromHSV(150, 0.15, 1.0));
 
-    DrawText("Some cool text!", 190, 200, 20, LIGHTGRAY);
+    DrawText("Some cool text!", 190, 200, 20, BLACK);
 
     if (state->gs_hosting) {
-        DrawText("Hosting a game", 190, 220, 20, LIGHTGRAY);
+        DrawText("Hosting a game", 190, 220, 20, BLACK);
     } else {
-        DrawText("Joined a game", 190, 220, 20, LIGHTGRAY);
+        DrawText("Joined a game", 190, 220, 20, BLACK);
     }
 
     char *const str = malloc(100);
 
     snprintf(str, 100, "Port: %u", state->gs_net_port);
-    DrawText(str, 190, 240, 20, LIGHTGRAY);
+    DrawText(str, 190, 240, 20, BLACK);
 
     if (state->gs_hosting) {
         for (uint16_t i = 0; i < state->gss_player_count; i++) {
             snprintf(str, 100, "X: %d, Y: %d", state->gss_players[i].x, state->gss_players[i].y);
-            DrawText(str, 190, 260 + i * 20, 20, LIGHTGRAY);
+            DrawText(str, 190, 260 + i * 20, 20, BLACK);
 
-            DrawRectangle(state->gss_players[i].x, state->gss_players[i].y, 10, 10, ColorFromHSV((float) state->gss_players[i].id, 1.0, 1.0));
+            DrawRectangle(state->gss_players[i].x, state->gss_players[i].y, 10, 10, ColorFromHSV(state->gss_players[i].id / 360.0, 1.0, 1.0));
         }
     }
     else {
         snprintf(str, 100, "X: %d, Y: %d", state->gsc_player.x, state->gsc_player.y);
-        DrawText(str, 190, 260, 20, LIGHTGRAY);
+        DrawText(str, 190, 260, 20, BLACK);
 
-        DrawRectangle(state->gsc_player.x, state->gsc_player.y, 10, 10, RED);
+        snprintf(str, 100, "ID: %d", state->gsc_player.id);
+        DrawText(str, 190, 280, 20, BLACK);
+
+        DrawRectangle(state->gsc_player.x, state->gsc_player.y, 10, 10, ColorFromHSV(state->gsc_player.id / 360.0, 1.0, 1.0));
     }
 }
 

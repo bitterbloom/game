@@ -28,12 +28,20 @@ struct ServerData {
     pthread_t receiver; // receiver is -1 if not started
 };
 
-/// TODO: Use a packet type
-// typedef struct {
-//     Player players;
-// } PlayerPacket;
+typedef struct {
+    uint32_t id;
+    uint16_t flags; //?
+    uint16_t max; // currently sends max player count with each packet. TODO: Add different packet counts and add state machines and acknowledgements so that we can send id and max as one of the first packets and then don't have to send them again.
+    uint16_t len;
+    Player buf[];
+} Packet;
 
 ServerData *net_server_data_new(Player *const players, uint16_t *const len_players, uint16_t const max_players) {
+    if (max_players == 0) {
+        fprintf(stderr, "Player list must have at least one player\n");
+        exit(EXIT_FAILURE);
+    }
+
     ServerData *data = malloc(sizeof (ServerData));
     if (data == NULL) {
         fprintf(stderr, "Failed to allocate server data\n");
@@ -84,14 +92,11 @@ static noreturn void *server_thread_sender(ServerSenderArgs *const args) {
 
     printf("starting server sender thread\n");
 
-    Player *const buf = malloc(data->max * sizeof (Player));
-    uint16_t *const written = calloc(data->max, sizeof (uint16_t));
+    Packet *const packet = malloc(sizeof (Packet) + data->max * sizeof (Player));
+    uint16_t *const playeres_written = calloc(data->max, sizeof (uint16_t));
 
     while (true) {
         printf("send loop began\n");
-        fflush(stdout);
-
-        printf("data->len = %u\n", *data->len);
 
         thrd_sleep(&(struct timespec) {.tv_sec = 0, .tv_nsec = 10000000}, NULL); // 10ms
 
@@ -122,31 +127,30 @@ static noreturn void *server_thread_sender(ServerSenderArgs *const args) {
         // send packets to clients
         for (uint16_t i = 0; i < *data->len && ready_count > 0; i++) {
             if (FD_ISSET(data->sockets[i], &write_fds)) {
-                //printf("sending to client %u\tat i = %u\n", data->players[i].id, (uint32_t) i);
 
-                uint16_t const begin = written[i];
+                uint16_t const begin = playeres_written[i];
                 uint16_t const size = *data->len - begin;
 
-                //printf("begin = %u\n", begin);
-                //printf("size = %u\n", size);
-                //printf("len = %u\n", *data->len);
+                packet->id = htonl(data->players[i].id);
+                packet->flags = 0;
+                packet->max = htons(data->max);
+                packet->len = htons(size);
 
                 for (uint16_t j = 0; j < size; j++) {
-                    buf[j].id = htonl(data->players[begin + j].id);
-                    buf[j].x = htonl(data->players[begin + j].x);
-                    buf[j].y = htonl(data->players[begin + j].y);
+                    packet->buf[j].id = htonl(data->players[begin + j].id);
+                    packet->buf[j].x = htonl(data->players[begin + j].x);
+                    packet->buf[j].y = htonl(data->players[begin + j].y);
                 }
 
-                size_t n = write(data->sockets[i], buf, size * sizeof (Player));
+                size_t n = write(data->sockets[i], packet, sizeof (Packet) + size * sizeof (Player));
                 if (n == -1) {
-                    // TODO: maybe check for EAGAIN or EWOULDBLOCK and try again
                     fprintf(stderr, "Failed to write to client: %s\n", strerror(errno));
                     exit(EXIT_FAILURE);
                 }
 
-                written[i] += n / sizeof (Player);
-                if (written[i] == *data->len) {
-                    written[i] = 0;
+                playeres_written[i] += (n - sizeof (Packet)) / sizeof (Player);
+                if (playeres_written[i] == *data->len) {
+                    playeres_written[i] = 0;
                 }
 
                 ready_count--;
@@ -154,8 +158,11 @@ static noreturn void *server_thread_sender(ServerSenderArgs *const args) {
         }
     }
 
-    free(buf);
-    free(written);
+    // never reached
+    // TODO: Maybe give some sort of signal to this thread to indicate to stop the loop
+    // when the server is shutting down.
+    free(packet);
+    free(playeres_written);
 }
 
 typedef struct {
@@ -168,7 +175,7 @@ static noreturn void *server_thread_receiver(ServerReceiverArgs *const args) {
     ServerData *const data = args->data;
     free(args);
 
-    printf("starting server receiver thread with serv_fd %d\n", serv_fd);
+    printf("starting server receiver thread\n");
 
     if (*data->len != 0) {
         fprintf(stderr, "Player list must be empty\n");
@@ -182,7 +189,6 @@ static noreturn void *server_thread_receiver(ServerReceiverArgs *const args) {
 
     while (true) {
         printf("receive loop began\n");
-        fflush(stdout);
 
         thrd_sleep(&(struct timespec) {.tv_sec = 0, .tv_nsec = 10000000}, NULL); // 10ms
 
@@ -234,7 +240,7 @@ static noreturn void *server_thread_receiver(ServerReceiverArgs *const args) {
             }
 
             data->sockets[*data->len] = con_fd;
-            data->players[*data->len].id = rand();
+            data->players[*data->len].id = rand(); // TODO: Make sure this is unique and non-zero
             data->players[*data->len].x = 0;
             data->players[*data->len].y = 0;
             (*data->len)++;
@@ -291,7 +297,7 @@ void net_server_create(uint16_t const port, ServerData *const data) {
         exit(EXIT_FAILURE);
     }
     fcntl(serv_fd, F_SETFL, O_NONBLOCK);
-    printf("server socket created with fd %d\n", serv_fd);
+    printf("creating server\n");
 
     // bind to specified port
     struct sockaddr_in serv_addr = {0};
@@ -332,12 +338,12 @@ void net_server_create(uint16_t const port, ServerData *const data) {
 }
 
 struct ClientData {
-    Player const *player;
+    Player *player;
     pthread_t sender;
     pthread_t receiver;
 };
 
-ClientData *net_client_data_new(Player const *const player) {
+ClientData *net_client_data_new(Player *const player) {
     ClientData *data = malloc(sizeof (ClientData));
     if (data == NULL) {
         fprintf(stderr, "Failed to allocate client data\n");
@@ -406,12 +412,18 @@ typedef struct {
     ClientData *data;
 } ClientReceiverArgs;
 
+// TODO: I think this functions fails if some packets are lost
 static noreturn void *client_thread_receiver(ClientReceiverArgs *const args) {
     int const socket = args->socket;
-    //ClientData *const data = args->data;
+    ClientData *const data = args->data;
     free(args);
 
     printf("starting client receiver thread\n");
+
+    uint16_t players_max = 0;
+    uint16_t players_len = 0;
+    Packet *packet = malloc(sizeof (Packet));
+    uint16_t players_read = 0;
 
     while (true) {
         printf("receive loop began\n");
@@ -419,21 +431,65 @@ static noreturn void *client_thread_receiver(ClientReceiverArgs *const args) {
 
         thrd_sleep(&(struct timespec) {.tv_sec = 0, .tv_nsec = 10000000}, NULL); // 10ms
 
-        Player buf;
-        size_t n = read(socket, &buf, sizeof (Player)); // blocks
-        // ignore the count of bytes read as we will be reading the entire packet at once
+        // // if first packet
+        // if (players_max == 0) {
+            size_t n = read(socket, packet, sizeof (Packet)); // blocks
 
-        if (n == -1) {
-            fprintf(stderr, "Failed to read from server: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
+            if (n == -1) {
+                fprintf(stderr, "Failed to read from server: %s\n", strerror(errno));
+                exit(EXIT_FAILURE);
+            }
 
-        /// TODO: Make clients also store players position
-        // data->player.id = ntohl(buf.id);
-        // data->player.x = ntohl(buf.x);
-        // data->player.y = ntohl(buf.y);
+            if (n < sizeof (Packet)) {
+                // TODO: Fix this
+                fprintf(stderr, "Received incomplete first packet of size %zu\n", n);
+                exit(EXIT_FAILURE);
+            }
 
-        printf("received from server\n");
+            players_max = ntohs(packet->max);
+            players_len = ntohs(packet->len);
+            Packet *const new_packet = malloc(sizeof (Packet) + players_max * sizeof (Player));
+            data->player->id = ntohl(packet->id);
+
+            memcpy(new_packet, packet, sizeof (Packet));
+            free(packet);
+            packet = new_packet;
+
+            while (players_read < players_len) {
+                n = read(socket, packet->buf + players_read, (players_len - players_read) * sizeof (Player)); // blocks
+
+                if (n == -1) {
+                    fprintf(stderr, "Failed to read from server: %s\n", strerror(errno));
+                    exit(EXIT_FAILURE);
+                }
+
+                // TODO: Do something with data
+
+                players_read += n / sizeof (Player);
+
+                printf("received from server\n");
+            }
+        // }
+        // else {
+        //     while (players_read < players_len) {
+        //         size_t n = read(socket, packet + players_read, (players_len - players_read) * sizeof (Player)); // blocks
+        //
+        //         if (n == -1) {
+        //             fprintf(stderr, "Failed to read from server: %s\n", strerror(errno));
+        //             exit(EXIT_FAILURE);
+        //         }
+        //
+        //         if (n < sizeof (Packet) + players_max * sizeof (Player)) {
+        //             // TODO: Fix this
+        //             fprintf(stderr, "Received incomplete packet\n");
+        //             exit(EXIT_FAILURE);
+        //         }
+        //
+        //         // TODO: Do something with data
+        //
+        //         printf("received from server\n");
+        //     }
+        // }
     }
 }
 
@@ -446,21 +502,21 @@ void net_client_create(uint16_t port, ClientData *data) {
     }
     printf("client socket created with fd %d\n", clnt_fd);
 
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
+    struct sockaddr_in serv_addr = {0};
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(port);
 
     // connect to local machine at specified port
     char addrstr[32];
     snprintf(addrstr, sizeof (addrstr), "127.0.0.1:%d", port);
 
     // parse into address
-    inet_pton(AF_INET, addrstr, &addr.sin_addr);
+    inet_pton(AF_INET, addrstr, &serv_addr.sin_addr);
 
-    printf("client is connecting on port %d\n", (int) ntohs(addr.sin_port));
+    printf("client is connecting on port %d\n", (int) ntohs(serv_addr.sin_port));
 
     // connect to server
-    if (connect(clnt_fd, (struct sockaddr*) &addr, sizeof (addr))) {
+    if (connect(clnt_fd, (struct sockaddr*) &serv_addr, sizeof (serv_addr))) {
         fprintf(stderr, "Failed to connect to server: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
