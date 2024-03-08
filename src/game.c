@@ -67,10 +67,10 @@ void game_close(Gamestate *const state) {
 }
 
 #ifndef DEBUG
-static void goto_title_screen(Gamestate *const state) {
-    state->screen_tag = TITLE_SCREEN;
-    state->ts_selected = 0;
-}
+// static void goto_title_screen(Gamestate *const state) {
+//     state->screen_tag = TITLE_SCREEN;
+//     state->ts_selected = 0;
+// }
 
 static void goto_game_screen(Gamestate *const state, bool const hosting) {
     state->screen_tag = GAME_SCREEN;
