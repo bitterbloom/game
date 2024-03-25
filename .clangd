@@ -1,2 +1,2 @@
 CompileFlags:
-  Add: [-Wall --std=c2x -xc]
+  Add: [-Wall -xc]
