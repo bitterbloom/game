@@ -24,8 +24,12 @@ typedef void game_update_t(Gamestate *state);
 #endif
 
 typedef struct {
-    uint32_t id;
     uint32_t x;
     uint32_t y;
+} point;
+
+typedef struct {
+    uint32_t id;
+    point pos;
 } Player;
 
