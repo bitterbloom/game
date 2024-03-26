@@ -13,11 +13,11 @@ bool game_should_close(Gamestate const *state);
 
 void game_close(Gamestate *state);
 
-#ifndef DEBUG
+#if !defined(HOTRELOAD) || !defined(__linux__)
 void game_update(Gamestate *state);
 #endif
 
-#ifdef DEBUG
+#if defined(HOTRELOAD) && defined(__linux__)
 bool game_should_debug_reload(Gamestate const *state);
 
 typedef void game_update_t(Gamestate *state);

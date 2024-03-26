@@ -9,6 +9,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 #include <threads.h>
 #include <unistd.h>
 #include <netdb.h>
@@ -83,6 +84,7 @@ typedef struct {
     };
 } S2CPacket;
 
+#if !defined(HOTRELOAD) || !defined(__linux__)
 ServerData *net_server_data_new(Player *const players, uint16_t *const len_players, uint16_t const max_players) {
     if (max_players == 0)
         EXIT_PRINT("Player list must have at least one player\n");
@@ -91,43 +93,38 @@ ServerData *net_server_data_new(Player *const players, uint16_t *const len_playe
     if (data == NULL)
         EXIT_PRINT("Failed to allocate server data\n");
 
+    data->max = max_players;
+    data->len = len_players;
+    data->players = players;
+
     if (pthread_mutex_init(&data->len_mutex, NULL))
         EXIT_PRINT("Failed to initialize player list mutex: %s\n", strerror(errno));
 
-    clnt_state *const clnt_states = malloc(max_players * sizeof (clnt_state));
-    if (clnt_states == NULL)
+    data->clnt_states = malloc(max_players * sizeof (clnt_state));
+    if (data->clnt_states == NULL)
         EXIT_PRINT("Failed to allocate client states\n");
 
-    time_t *const clnt_last = malloc(max_players * sizeof (time_t));
-    if (clnt_last == NULL)
+    data->clnt_last = malloc(max_players * sizeof (time_t));
+    if (data->clnt_last == NULL)
         EXIT_PRINT("Failed to allocate client last times\n");
 
-    struct sockaddr_in *const clnt_addrs = malloc(max_players * sizeof (struct sockaddr_storage));
-    if (clnt_addrs == NULL)
+    data->clnt_addrs = malloc(max_players * sizeof (struct sockaddr_in));
+    if (data->clnt_addrs == NULL)
         EXIT_PRINT("Failed to allocate client addresses\n");
 
-    *data = (ServerData) {
-        .max = max_players,
-        .len = len_players,
-        .clnt_states = clnt_states,
-        .clnt_last = clnt_last,
-        .clnt_addrs = clnt_addrs,
-        .players = players,
-        -1, -1, -1,
-    };
+    data->sender   = -1;
+    data->receiver = -1;
+    data->serv_fd  = -1;
+
     return data;
 }
 
 void net_server_data_delete(ServerData *const data) {
-    if (data->sender != -1) {
-        if (pthread_cancel(data->sender))
-            EXIT_PRINT("Failed to send cancel request to server sender thread: %s\n", strerror(errno));
-    }
+    if (data->sender != -1 && pthread_cancel(data->sender))
+        EXIT_PRINT("Failed to send cancel request to server sender thread: %s\n", strerror(errno));
 
-    if (data->receiver != -1) {
-        if (pthread_cancel(data->receiver))
-            EXIT_PRINT("Failed to send cancel request to server receiver thread: %s\n", strerror(errno));
-    }
+    if (data->receiver != -1 && pthread_cancel(data->receiver))
+        EXIT_PRINT("Failed to send cancel request to server receiver thread: %s\n", strerror(errno));
 
     pthread_mutex_destroy(&data->len_mutex);
     free(data->clnt_states);
@@ -439,6 +436,7 @@ void net_server_create(uint16_t const port, ServerData *const data) {
     if (pthread_create(&data->receiver, NULL, (void*(*)(void*)) server_thread_receiver, data))
         EXIT_PRINT("Failed to create server receiver thread: %s\n", strerror(errno));
 }
+#endif // !defined(HOTRELOAD) || !defined(__linux__)
 
 struct ClientData {
     clnt_state clnt_state;
@@ -449,30 +447,28 @@ struct ClientData {
     int clnt_fd;
 };
 
+#if !defined(HOTRELOAD) || !defined(__linux__)
 ClientData *net_client_data_new(Player *const player) {
     ClientData *data = malloc(sizeof (ClientData));
     if (data == NULL)
         EXIT_PRINT("Failed to allocate client data\n");
 
-    *data = (ClientData) {
-        .clnt_state = JOINING,
-        //.serv_addr = (struct sockaddr_in) {0},
-        .player = player,
-        -1, -1, -1,
-    };
+    data->clnt_state = JOINING;
+    data->serv_addr  = (struct sockaddr_in) {0},
+    data->player     = player;
+    data->sender     = -1;
+    data->receiver   = -1;
+    data->clnt_fd    = -1;
+
     return data;
 }
 
 void net_client_data_delete(ClientData *const data) {
-    if (data->sender != -1) {
-        if (pthread_cancel(data->sender))
-            EXIT_PRINT("Failed to send cancel request to client sender thread: %s\n", strerror(errno));
-    }
+    if (data->sender != -1 && pthread_cancel(data->sender))
+        EXIT_PRINT("Failed to send cancel request to client sender thread: %s\n", strerror(errno));
 
-    if (data->receiver != -1) {
-        if (pthread_cancel(data->receiver))
-            EXIT_PRINT("Failed to send cancel request to client receiver thread: %s\n", strerror(errno));
-    }
+    if (data->receiver != -1 && pthread_cancel(data->receiver))
+        EXIT_PRINT("Failed to send cancel request to client receiver thread: %s\n", strerror(errno));
 
     close(data->clnt_fd);
     free(data);
@@ -553,7 +549,7 @@ next_loop:
     while (true) {
         fflush(stdout);
 
-        //thrd_sleep(DELAY, NULL);
+        // thrd_sleep(SENDER_DELAY, NULL);
 
         fd_set fds;
         FD_ZERO(&fds);
@@ -638,3 +634,5 @@ void net_client_create(uint16_t port, ClientData *data) {
     if (pthread_create(&data->receiver, NULL, (void*(*)(void*)) client_thread_receiver, data))
         EXIT_PRINT("Failed to create client receiver thread: %s\n", strerror(errno));
 }
+#endif // !defined(HOTRELOAD) || !defined(__linux__)
+

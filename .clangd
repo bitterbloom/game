@@ -1,2 +1,4 @@
 CompileFlags:
-  Add: [-Wall -xc]
+  Add:
+    - "-Wall"
+    - "-xc"

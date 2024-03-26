@@ -8,6 +8,7 @@
 
 #include "./game.h"
 #include "./net.h"
+#include "./util.h"
 
 typedef enum {
     TITLE_SCREEN,
@@ -43,7 +44,7 @@ struct State {
 };
 
 Gamestate *game_init() {
-    Gamestate *const state = malloc(sizeof(Gamestate));
+    Gamestate *const state = malloc(sizeof (Gamestate));
     *state = (Gamestate) {
         TITLE_SCREEN,
         .ts_selected = 0,
@@ -66,13 +67,63 @@ void game_close(Gamestate *const state) {
     CloseWindow();
 }
 
-#ifndef DEBUG
+#if !defined(HOTRELOAD) || !defined(__linux__) // If build with hotreloading, then this will get compiled separately from main.c into game.so
 // static void goto_title_screen(Gamestate *const state) {
 //     state->screen_tag = TITLE_SCREEN;
 //     state->ts_selected = 0;
 // }
 
+#if defined(HOTRELOADING) && defined(__linux__)
+    #include <dlfcn.h>
+#endif
+
 static void goto_game_screen(Gamestate *const state, bool const hosting) {
+#if defined(HOTRELOADING) && defined(__linux__)
+    net_server_data_new_t *net_server_data_new;
+    net_server_create_t *net_server_create;
+    net_client_data_new_t *net_client_data_new;
+    net_client_create_t *net_client_create;
+    
+    /* load functions from net.so */ {
+        printf("Loading net.so...\n");
+
+        char const *error;
+
+        void *const net_so = dlopen("net.so", RTLD_NOW | RTLD_NODELETE);
+        error = dlerror();
+        if (error != NULL)
+            EXIT_PRINT("Failed to load net.so: %s\n", error);
+
+        if (hosting) {
+            net_server_data_new = dlsym(net_so, "net_server_data_new");
+            error = dlerror();
+            if (error != NULL)
+                EXIT_PRINT("Failed to load net_server_data_new: %s\n", error);
+
+            net_server_create = dlsym(net_so, "net_server_create");
+            error = dlerror();
+            if (error != NULL)
+                EXIT_PRINT("Failed to load net_server_create: %s\n", error);
+        }
+        else {
+            net_client_data_new = dlsym(net_so, "net_client_data_new");
+            error = dlerror();
+            if (error != NULL)
+                EXIT_PRINT("Failed to load net_client_data_new: %s\n", error);
+
+            net_client_create = dlsym(net_so, "net_client_create");
+            error = dlerror();
+            if (error != NULL)
+                EXIT_PRINT("Failed to load net_client_create: %s\n", error);
+        }
+
+        printf("Loaded net.so\n");
+
+        if (dlclose(net_so))
+            EXIT_PRINT("Failed to close net.so: %s\n", dlerror());
+    }
+#endif
+
     state->screen_tag = GAME_SCREEN;
     state->gs_hosting = hosting;
     state->gs_net_port = 1234;
@@ -104,6 +155,7 @@ static void update_title_screen(Gamestate *const state) {
 }
 
 static void update_game_screen(Gamestate *const state) {
+    if (state->gs_hosting) return;
     if (IsKeyDown(KEY_UP))    state->gsc_player.pos.y -= 1;
     if (IsKeyDown(KEY_DOWN))  state->gsc_player.pos.y += 1;
     if (IsKeyDown(KEY_LEFT))  state->gsc_player.pos.x -= 1;
@@ -164,11 +216,10 @@ static void draw_game_screen(Gamestate const *const state) {
 
     DrawText("Some cool text!", 190, 200, 20, BLACK);
 
-    if (state->gs_hosting) {
+    if (state->gs_hosting)
         DrawText("Hosting a game", 190, 220, 20, BLACK);
-    } else {
+    else
         DrawText("Joined a game", 190, 220, 20, BLACK);
-    }
 
     char *const str = malloc(100);
 
@@ -221,7 +272,7 @@ void game_update(Gamestate *const state) {
 
     EndDrawing();
 }
-#endif
+#endif // !defined(HOTRELOAD) || !defined(__linux__)
 
 bool game_should_debug_reload(Gamestate const *const state) {
     return IsKeyPressed(KEY_R);
