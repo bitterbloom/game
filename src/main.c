@@ -1,13 +1,11 @@
 #include <stdlib.h>
-#include <stdio.h>
-#include <stdbool.h>
-#include <string.h>
 
-//#define DEBUG
-
+#include "./util.h"
 #include "./game.h"
 
-#if defined(DEBUG) && defined(__linux__)
+#if defined(HOTRELOAD) && defined(__linux__)
+    #include <string.h>
+
     #include <dlfcn.h>
     #include <sys/inotify.h>
     #include <pthread.h>
@@ -23,23 +21,17 @@
         bool *modified = args;
 
         fd = inotify_init();
-        if (fd == -1) {
-            fprintf(stderr, "Failed to initialize inotify: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
+        if (fd == -1)
+            EXIT_PRINT("Failed to initialize inotify: %s\n", strerror(errno));
 
-        if (inotify_add_watch(fd, "src", IN_MODIFY) == -1) {
-            fprintf(stderr, "Failed to add watch: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
+        if (inotify_add_watch(fd, "src", IN_MODIFY) == -1)
+            EXIT_PRINT("Failed to add watch: %s\n", strerror(errno));
 
         char buf[1024];
         while (true) {
             ssize_t len = read(fd, buf, sizeof(buf)); // blocks until file is modified
-            if (len == -1) {
-                fprintf(stderr, "Failed to read inotify: %s\n", strerror(errno));
-                exit(EXIT_FAILURE);
-            }
+            if (len == -1)
+                EXIT_PRINT("Failed to read inotify: %s\n", strerror(errno));
             *modified = true;
         }
     }
@@ -54,27 +46,31 @@
         static bool modified = false;
 
         if (game_so == NULL) { // On first invocation
-            if (pthread_create(&watcher_id, NULL, watcher, &modified)) {
-                fprintf(stderr, "Failed to create watcher thread: %s\n", strerror(errno));
-                exit(EXIT_FAILURE);
-            }
+            if (pthread_create(&watcher_id, NULL, watcher, &modified))
+                EXIT_PRINT("Failed to create watcher thread: %s\n", strerror(errno));
             goto do_reload;
         }
 
         if (modified) {
             modified = false;
-            if (system("make bin/game.so")) {
+#ifndef DEBUG
+            if (system("make _game.so")) {
+#else
+            if (system("make _game.so-debug")) {
+#endif
                 // If compilation fails, the game will continue to run the old code.
                 fprintf(stderr, "Failed to build game.so: %s\n", strerror(errno));
                 modified = false;
                 return game_update;
             }
-            dlclose(game_so);
+            if (dlclose(game_so))
+                EXIT_PRINT("Failed to close game.so: %s\n", dlerror());
             goto do_reload;
         }
 
         if (game_should_debug_reload(state)) {
-            dlclose(game_so);
+            if (dlclose(game_so))
+                EXIT_PRINT("Failed to close game.so: %s\n", dlerror());
             goto do_reload;
         }
 
@@ -83,36 +79,36 @@
     do_reload:
         printf("Loading game.so...\n");
 
+        char const *error;
+
         game_so = dlopen("game.so", RTLD_NOW);
-        if (game_so == NULL) {
-            fprintf(stderr, "Failed to load game.so: %s\n", dlerror());
-            exit(EXIT_FAILURE);
-        }
+        error = dlerror();
+        if (error != NULL) 
+            EXIT_PRINT("Failed to load game.so: %s\n", error);
 
         game_update = dlsym(game_so, "game_update");
-        if (game_update == NULL) {
-            fprintf(stderr, "Failed to load game_update: %s\n", dlerror());
-            exit(EXIT_FAILURE);
-        }
+        error = dlerror();
+        if (error != NULL)
+            EXIT_PRINT("Failed to load game_update: %s\n", error);
 
-        printf("Loaded game.so\n");
+        printf("Loaded game.so (game_update = %p)\n", game_update);
 
         return game_update;
     }
-#endif // DEBUG
+#endif // defined(HOTRELOAD) && defined(__linux__)
 
 int main(int const argc, char const *const *const argv) {
 
     Gamestate *const state = game_init();
 
-#if defined(DEBUG) && defined(__linux__)
+#if defined(HOTRELOAD) && defined(__linux__)
     game_update_t *game_update = debug_reload(state);
 #endif
 
     while (!game_should_close(state)) {
         game_update(state);
 
-#if defined(DEBUG) && defined(__linux__)
+#if defined(HOTRELOAD) && defined(__linux__)
         game_update = debug_reload(state);
 #endif
     }

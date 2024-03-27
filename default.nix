@@ -19,7 +19,7 @@ pkgs.stdenv.mkDerivation {
 
   installPhase = ''
     mkdir -p $out/bin
-    cp ./bin/game $out/bin
+    cp ./bin/main-build $out/bin
   '';
 
   shellHook = ''
