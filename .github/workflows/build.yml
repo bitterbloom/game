@@ -25,10 +25,6 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v3
-      - name: Updating GCC
-        run: |
-          gcc --version
-          mingw-get update
       - name: Set up MingGW
         uses: egor-tensin/setup-mingw@v2
       - name: Download Raylib
