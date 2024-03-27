@@ -7,7 +7,7 @@
 
 #include "./game.h"
 
-#ifdef DEBUG
+#if defined(DEBUG) && defined(__linux__)
     #include <dlfcn.h>
     #include <sys/inotify.h>
     #include <pthread.h>
@@ -105,14 +105,14 @@ int main(int const argc, char const *const *const argv) {
 
     Gamestate *const state = game_init();
 
-#ifdef DEBUG
+#if defined(DEBUG) && defined(__linux__)
     game_update_t *game_update = debug_reload(state);
 #endif
 
     while (!game_should_close(state)) {
         game_update(state);
 
-#ifdef DEBUG
+#if defined(DEBUG) && defined(__linux__)
         game_update = debug_reload(state);
 #endif
     }

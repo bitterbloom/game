@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <pthread.h>
 
 #include "raylib.h"
 
@@ -66,7 +65,6 @@ void game_close(Gamestate *const state) {
     CloseWindow();
 }
 
-#ifndef DEBUG
 // static void goto_title_screen(Gamestate *const state) {
 //     state->screen_tag = TITLE_SCREEN;
 //     state->ts_selected = 0;
@@ -221,7 +219,6 @@ void game_update(Gamestate *const state) {
 
     EndDrawing();
 }
-#endif
 
 bool game_should_debug_reload(Gamestate const *const state) {
     return IsKeyPressed(KEY_R);

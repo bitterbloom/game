@@ -1,23 +1,38 @@
+#ifdef _WIN64
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
-#include <stdnoreturn.h>
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
 
+#include "./net.h" // must include raylib before windows header files...
+#include "./arg.h"
+#include "./util.h"
+
+#ifdef __linux__
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <threads.h>
 #include <unistd.h>
 #include <netdb.h>
+#elif defined(_WIN64)
+#define NOGDI
+#define NOUSER
+#include <WinSock2.h>
+#include <Ws2tcpip.h>
+#pragma comment(lib, "Ws_32.lib")
+#include <process.h>
+#endif
+
+#include <stdnoreturn.h> // must go after windows header files...
+
 #include <fcntl.h>
 #include <time.h>
-
-#include "./net.h"
-#include "./arg.h"
-#include "./util.h"
 
 #define SOCK_ADDR_IN_EQ(a, b) (a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port)
 #define SENDER_DELAY (&(struct timespec) {.tv_sec = 0, .tv_nsec = 35000000}) // 35 ms
@@ -28,19 +43,6 @@ typedef enum {
     REJOINING,
     PLAYING,
 } clnt_state;
-
-struct ServerData {
-    uint16_t max;
-    uint16_t *len;
-    pthread_mutex_t len_mutex;
-    clnt_state *clnt_states;
-    time_t *clnt_last;
-    struct sockaddr_in *clnt_addrs;
-    Player *players;
-    pthread_t sender;
-    pthread_t receiver; // receiver is -1 if not started
-    int serv_fd;
-};
 
 typedef uint8_t PacketTag;
 
@@ -83,6 +85,20 @@ typedef struct {
     };
 } S2CPacket;
 
+#ifdef __linux__
+struct ServerData {
+    uint16_t max;
+    uint16_t *len;
+    pthread_mutex_t len_mutex;
+    clnt_state *clnt_states;
+    time_t *clnt_last;
+    struct sockaddr_in *clnt_addrs;
+    Player *players;
+    pthread_t sender;
+    pthread_t receiver; // receiver is -1 if not started
+    int serv_fd;
+};
+
 ServerData *net_server_data_new(Player *const players, uint16_t *const len_players, uint16_t const max_players) {
     if (max_players == 0)
         EXIT_PRINT("Player list must have at least one player\n");
@@ -94,8 +110,8 @@ ServerData *net_server_data_new(Player *const players, uint16_t *const len_playe
     if (pthread_mutex_init(&data->len_mutex, NULL))
         EXIT_PRINT("Failed to initialize player list mutex: %s\n", strerror(errno));
 
-    clnt_state *const clnt_states = malloc(max_players * sizeof (clnt_state));
-    if (clnt_states == NULL)
+    data->clnt_states = malloc(max_players * sizeof (clnt_state));
+    if (data->clnt_states == NULL)
         EXIT_PRINT("Failed to allocate client states\n");
 
     time_t *const clnt_last = malloc(max_players * sizeof (time_t));
@@ -638,3 +654,117 @@ void net_client_create(uint16_t port, ClientData *data) {
     if (pthread_create(&data->receiver, NULL, (void*(*)(void*)) client_thread_receiver, data))
         EXIT_PRINT("Failed to create client receiver thread: %s\n", strerror(errno));
 }
+#elif defined(_WIN64)
+struct ServerData {
+    uint16_t max;
+    uint16_t *len;
+    HANDLE len_mutex;
+    clnt_state *clnt_states;
+    time_t *clnt_last;
+    struct sockaddr_storage *clnt_addrs;
+    Player *players;
+    HANDLE receiver;
+    HANDLE sender;
+    SOCKET serv_fd;
+};
+
+ServerData *net_server_data_new(Player *const players, uint16_t *const len_players, uint16_t const max_players) {
+    if (max_players == 0)
+        EXIT_PRINT("Player list must have at least one player\n");
+
+    ServerData *data = malloc(sizeof (ServerData));
+    if (data == NULL)
+        EXIT_PRINT("Failed to allocate server data\n");
+
+    data->max = max_players;
+    data->len = len_players;
+    data->players = players;
+
+    data->len_mutex = CreateMutex(NULL, false, NULL);
+    if (data->len_mutex == NULL)
+        EXIT_PRINT("Failed to initialize player list mutex\n");
+
+    data->clnt_states = malloc(max_players * sizeof (clnt_state));
+    if (data->clnt_states == NULL)
+        EXIT_PRINT("Failed to allocate client states\n");
+
+    data->clnt_last = malloc(max_players * sizeof (time_t));
+    if (data->clnt_last == NULL)
+        EXIT_PRINT("Failed to allocate client last times\n");
+
+    data->clnt_addrs = malloc(max_players * sizeof (struct sockaddr_in));
+    if (data->clnt_addrs == NULL)
+        EXIT_PRINT("Failed to allocate client addresses\n");
+
+    data->receiver = NULL;
+    data->sender   = NULL;
+    data->serv_fd  = 0;
+}
+
+void net_server_data_delete(ServerData *const data) {
+    EXIT_PRINT("todo");
+}
+
+static void *server_thread_sender(ServerData *const data) {
+    EXIT_PRINT("todo");
+}
+
+static noreturn void server_thread_receiver(ServerData *const data) {
+    EXIT_PRINT("todo");
+}
+
+void net_server_create(uint16_t const port, ServerData *const data) {
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+        EXIT_PRINT("Failed to start WSA");
+
+    printf("creating server socket\n");
+    data->serv_fd = socket(AF_INET, SOCK_DGRAM, PF_UNSPEC);
+    if (data->serv_fd == -1)
+        EXIT_PRINT("Failed to create socket\n");
+    printf("created server socket = %llu\n", data->serv_fd);
+
+    printf("binding server socket to port %d\n", (int) port);
+    struct sockaddr_in serv_addr = {0};
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_port = htons(port);
+
+    if (bind(data->serv_fd, (struct sockaddr*) &serv_addr, sizeof (serv_addr)))
+        EXIT_PRINT("Failed to bind socket\n");
+    printf("server socket bound to port %d\n", (int) ntohs(serv_addr.sin_port));
+
+    data->receiver = (HANDLE) _beginthreadex(NULL, 0, (unsigned int __stdcall(*)(void*)) server_thread_receiver, data, 0, NULL);
+    if (!data->receiver)
+        EXIT_PRINT("Failed to create server receiver thread: %s\n", strerror(errno));
+}
+
+struct ClientData {
+    clnt_state clnt_state;
+    struct sockaddr_in serv_addr;
+    Player *player;
+    HANDLE sender;
+    HANDLE receiver;
+    SOCKET clnt_fd;
+};
+
+ClientData *net_client_data_new(Player *const player) {
+    EXIT_PRINT("todo");
+}
+
+void net_client_data_delete(ClientData *const data) {
+    EXIT_PRINT("todo");
+}
+
+static void *client_thread_sender(ClientData *const data) {
+    EXIT_PRINT("todo");
+}
+
+static noreturn void client_thread_receiver(ClientData *const data) {
+    EXIT_PRINT("todo");
+}
+
+void net_client_create(uint16_t port, ClientData *data) {
+    EXIT_PRINT("todo");
+}
+#endif

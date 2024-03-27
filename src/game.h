@@ -13,11 +13,9 @@ bool game_should_close(Gamestate const *state);
 
 void game_close(Gamestate *state);
 
-#ifndef DEBUG
+#if !defined(DEBUG) || !defined(__linux__)
 void game_update(Gamestate *state);
-#endif
-
-#ifdef DEBUG
+#else
 bool game_should_debug_reload(Gamestate const *state);
 
 typedef void game_update_t(Gamestate *state);
