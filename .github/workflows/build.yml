@@ -28,9 +28,9 @@ jobs:
       - name: Update GCC with Pacman
         run: |
           gcc --version
-          C:/msys64/usr/bin/yes | C:/msys64/usr/bin/pacman -Syu
+          C:/msys64/usr/bin/yes Y | C:/msys64/usr/bin/pacman -Syu
           gcc --version
-          C:/msys64/usr/bin/yes | C:/msys64/usr/bin/pacman -Su
+          C:/msys64/usr/bin/yes Y | C:/msys64/usr/bin/pacman -Su
           gcc --version
       - name: Download Raylib
         run: |
