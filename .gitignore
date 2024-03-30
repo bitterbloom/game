@@ -3,6 +3,9 @@
 # Project
 bin/
 
+# C
+.clangd
+
 # Nix
 result*
 .envrc
