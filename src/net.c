@@ -11,7 +11,6 @@
 #include <errno.h>
 
 #include "./net.h" // must include raylib before windows header files...
-#include "./arg.h"
 #include "./util.h"
 
 #ifdef __linux__
@@ -28,7 +27,8 @@
 #elif defined(_WIN64)
 #include <WinSock2.h>
 #include <Ws2tcpip.h>
-#include <process.h>
+
+#include "./os/threads.h"
 #endif
 
 #include <stdnoreturn.h> // must go after windows header files...
@@ -660,75 +660,20 @@ void net_client_create(uint16_t port, ClientData *data) {
 #define ERROR_BUFFER_LEN 1024
 static char error_buffer[ERROR_BUFFER_LEN];
 
-struct ServerData {
+struct Server {
     uint16_t max;
     uint16_t *len;
-    HANDLE len_mutex;
+    Mutex len_mutex;
     clnt_state *clnt_states;
     ULONGLONG *clnt_last;
     struct sockaddr_in *clnt_addrs;
     Player *players;
-    HANDLE receiver;
-    HANDLE sender;
+    Thread receiver;
+    Thread sender;
     SOCKET serv_fd;
 };
 
-ServerData *net_server_data_new(Player *const players, uint16_t *const len_players, uint16_t const max_players) {
-    if (max_players == 0)
-        EXIT_PRINT("Player list must have at least one player");
-
-    ServerData *data = malloc(sizeof (ServerData));
-    if (data == NULL)
-        EXIT_PRINT("Failed to allocate server data");
-
-    data->max = max_players;
-    data->len = len_players;
-    data->players = players;
-
-    data->len_mutex = CreateMutex(NULL, false, NULL);
-    if (data->len_mutex == NULL)
-        EXIT_PRINT("Failed to initialize player list mutex");
-
-    data->clnt_states = malloc(max_players * sizeof (clnt_state));
-    if (data->clnt_states == NULL)
-        EXIT_PRINT("Failed to allocate client states");
-
-    data->clnt_last = malloc(max_players * sizeof (ULONGLONG));
-    if (data->clnt_last == NULL)
-        EXIT_PRINT("Failed to allocate client last times");
-
-    data->clnt_addrs = malloc(max_players * sizeof (struct sockaddr_in));
-    if (data->clnt_addrs == NULL)
-        EXIT_PRINT("Failed to allocate client addresses");
-
-    data->receiver = NULL;
-    data->sender   = NULL;
-    data->serv_fd  = 0;
-
-    return data;
-}
-
-void net_server_data_delete(ServerData *const data) {
-    if (data->sender != NULL && !CloseHandle(data->sender))
-        EXIT_PRINT("Failed to close server sender thread");
-
-    if (data->receiver != NULL && !CloseHandle(data->receiver))
-        EXIT_PRINT("Failed to close server receiver thread");
-
-    if (!CloseHandle(data->len_mutex))
-        EXIT_PRINT("Failed to close server player mutex");
-
-    free(data->clnt_states);
-    free(data->clnt_last);
-    free(data->clnt_addrs);
-
-    if (closesocket(data->serv_fd))
-        EXIT_PRINT("Failed to close server socket");
-
-    free(data);
-}
-
-static void *server_thread_sender(ServerData *const data) {
+static void server_thread_sender(Server *const data) {
     printf("starting server sender thread\n");
 
     S2CPacket *packet = malloc(sizeof (S2CPacket) + data->max * sizeof (Player));
@@ -746,7 +691,7 @@ static void *server_thread_sender(ServerData *const data) {
                 if (now - data->clnt_last[i] > DISCONNECT_TIMEOUT_SEC * 1000) {
                     printf("Client %s:%d has timed out\n", inet_ntoa(data->clnt_addrs[i].sin_addr), ntohs(data->clnt_addrs[i].sin_port));
 
-                    if (WaitForSingleObject(data->len_mutex, INFINITE) != WAIT_OBJECT_0) // == WAIT_TIMEOUT if timed out
+                    if (!mutex_lock(data->len_mutex))
                         EXIT_PRINT("Failed to lock mutex");
 
                     uint16_t len = *data->len;
@@ -758,20 +703,20 @@ static void *server_thread_sender(ServerData *const data) {
                     }
 
                     *data->len = --len;
-                    if (!ReleaseMutex(data->len_mutex))
+                    if (!mutex_unlock(data->len_mutex))
                         EXIT_PRINT("Failed to release mutex");
                     i--;
                 }
             }
 
             if (*data->len == 0) {
-                if (WaitForSingleObject(data->len_mutex, INFINITE) != WAIT_OBJECT_0)
+                if (!mutex_lock(data->len_mutex))
                     EXIT_PRINT("Failed to lock mutex");
                 if (*data->len == 0) {
                     printf("All clients have disconnected\n");
                     goto after_while; // the lock will be released when the function returns
                 }
-                if (!ReleaseMutex(data->len_mutex))
+                if (!mutex_unlock(data->len_mutex))
                     EXIT_PRINT("Failed to release mutex");
             }
         }
@@ -841,16 +786,14 @@ after_while:
     //       when the server is shutting down.
     free(packet);
     
-    if (!ReleaseMutex(data->len_mutex)) { // from the `len == 0` check
+    if (!mutex_unlock(data->len_mutex)) { // from the `len == 0` check
         if (FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR) error_buffer, ERROR_BUFFER_LEN, NULL) == 0)
             EXIT_PRINT("Failed to format error message");
         EXIT_PRINT("Failed to release mutex: %s", error_buffer);
     }
-
-    return NULL;
 }
 
-static noreturn void server_thread_receiver(ServerData *const data) {
+static noreturn void server_thread_receiver(Server *const data) {
     printf("starting server receiver thread\n");
 
     if (*data->len != 0)
@@ -915,7 +858,7 @@ next_loop:
 
                     ULONGLONG now = GetTickCount64();
 
-                    if (WaitForSingleObject(data->len_mutex, INFINITE) != WAIT_OBJECT_0) // WAIT_TIMEOUT if timed out
+                    if (!mutex_lock(data->len_mutex))
                         EXIT_PRINT("Failed to lock mutex");
                     len = *data->len; // in case it was changed
                     
@@ -928,7 +871,7 @@ next_loop:
                         .pos.y = 0,
                     };
                     *data->len = ++len;
-                    if (!ReleaseMutex(data->len_mutex))
+                    if (!mutex_unlock(data->len_mutex))
                         EXIT_PRINT("Failed to release mutex");
 
                     printf("Added player %u\n", data->players[len].id);
@@ -958,7 +901,7 @@ next_loop:
 
                     ULONGLONG now = GetTickCount64();
 
-                    if (WaitForSingleObject(data->len_mutex, INFINITE) != WAIT_OBJECT_0) // WAIT_TIMEOUT if timed out
+                    if (!mutex_lock(data->len_mutex))
                         EXIT_PRINT("Failed to lock mutex");
                     len = *data->len; // in case it was changed
 
@@ -971,7 +914,7 @@ next_loop:
                         .pos.y = ntohl(packet.r_player.pos.y),
                     };
                     *data->len = ++len;
-                    if (!ReleaseMutex(data->len_mutex))
+                    if (!mutex_unlock(data->len_mutex))
                         EXIT_PRINT("Failed to release mutex");
 
                     printf("Rejoined player %u\n", id);
@@ -1005,9 +948,8 @@ next_loop:
 
             // if first connection
             if (*data->len == 1) {
-                data->sender = (HANDLE) _beginthreadex(NULL, 0, (unsigned int __stdcall(*)(void *)) server_thread_sender, data, 0, NULL);
-                if (!data->receiver)
-                    EXIT_PRINT("Failed to create server receiver thread: %s", strerror(errno));
+                if (!thread_spawn(&data->sender, (void (*)(void *)) server_thread_sender, data))
+                    EXIT_PRINT("Failed to create server sender thread: %s", strerror(errno));
             } 
 
             ready_count--;
@@ -1015,7 +957,33 @@ next_loop:
     }
 }
 
-void net_server_create(uint16_t const port, ServerData *const data) {
+Server *net_server_spawn(Player *const players, uint16_t *const len_players, uint16_t const max_players, uint16_t const port) {
+    if (max_players == 0)
+        EXIT_PRINT("Player list must have at least one player");
+
+    Server *const data = malloc(sizeof (Server));
+    if (data == NULL)
+        EXIT_PRINT("Failed to allocate server data");
+
+    data->max = max_players;
+    data->len = len_players;
+    data->players = players;
+
+    if (!mutex_init(&data->len_mutex))
+        EXIT_PRINT("Failed to initialize player list mutex");
+
+    data->clnt_states = malloc(max_players * sizeof (clnt_state));
+    if (data->clnt_states == NULL)
+        EXIT_PRINT("Failed to allocate client states");
+
+    data->clnt_last = malloc(max_players * sizeof (ULONGLONG));
+    if (data->clnt_last == NULL)
+        EXIT_PRINT("Failed to allocate client last times");
+
+    data->clnt_addrs = malloc(max_players * sizeof (struct sockaddr_in));
+    if (data->clnt_addrs == NULL)
+        EXIT_PRINT("Failed to allocate client addresses");
+
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData))
         EXIT_PRINT("Failed to start WSA");
@@ -1036,49 +1004,44 @@ void net_server_create(uint16_t const port, ServerData *const data) {
         EXIT_PRINT("Failed to bind socket");
     printf("server socket bound to port %d\n", (int) ntohs(serv_addr.sin_port));
 
-    data->receiver = (HANDLE) _beginthreadex(NULL, 0, (unsigned int __stdcall(*)(void*)) server_thread_receiver, data, 0, NULL);
-    if (!data->receiver)
+    if (!thread_spawn(&data->receiver, (void (*)(void *)) server_thread_receiver, data))
         EXIT_PRINT("Failed to create server receiver thread: %s", strerror(errno));
-}
 
-struct ClientData {
-    clnt_state clnt_state;
-    struct sockaddr_in serv_addr;
-    Player *player;
-    HANDLE sender;
-    HANDLE receiver;
-    SOCKET clnt_fd;
-};
-
-ClientData *net_client_data_new(Player *const player) {
-    ClientData *data = malloc(sizeof (ClientData));
-    if (data == NULL)
-        EXIT_PRINT("Failed to allocate client data");
-
-    data->clnt_state = JOINING;
-    data->serv_addr  = (struct sockaddr_in) {0};
-    data->player     = player;
-    data->sender     = NULL;
-    data->receiver   = NULL;
-    data->clnt_fd    = 0;
+    data->sender = THREAD_NULL;
 
     return data;
 }
 
-void net_client_data_delete(ClientData *const data) {
-    if (data->sender != NULL && !CloseHandle(data->sender))
-        EXIT_PRINT("Failed to close client sender thread");
+void net_server_close(Server *const data) {
+    if (!thread_is_null(data->sender) && !thread_kill(data->sender))
+        EXIT_PRINT("Failed to close server sender thread");
 
-    if (data->receiver != NULL && !CloseHandle(data->receiver))
-        EXIT_PRINT("Failed to close client receiver thread");
+    if (!thread_is_null(data->receiver) && !thread_kill(data->receiver))
+        EXIT_PRINT("Failed to close server receiver thread: %s", threads_get_error());
 
-    if (closesocket(data->clnt_fd))
-        EXIT_PRINT("Failed to close client socket");
+    if (!mutex_close(data->len_mutex))
+        EXIT_PRINT("Failed to close server player mutex");
+
+    free(data->clnt_states);
+    free(data->clnt_last);
+    free(data->clnt_addrs);
+
+    if (closesocket(data->serv_fd))
+        EXIT_PRINT("Failed to close server socket");
 
     free(data);
 }
 
-static void *client_thread_sender(ClientData *const data) {
+struct Client {
+    clnt_state clnt_state;
+    struct sockaddr_in serv_addr;
+    Player *player;
+    Thread sender;
+    Thread receiver;
+    SOCKET clnt_fd;
+};
+
+static void *client_thread_sender(Client *const data) {
     printf("starting client sender thread\n");
 
     C2SPacket packet;
@@ -1144,7 +1107,7 @@ static void *client_thread_sender(ClientData *const data) {
     }
 }
 
-static noreturn void client_thread_receiver(ClientData *const data) {
+static noreturn void client_thread_receiver(Client *const data) {
     printf("starting client receiver thread\n");
 
     uint16_t players_max = 0;
@@ -1222,7 +1185,15 @@ next_loop:
     free(packet);
 }
 
-void net_client_create(uint16_t port, ClientData *data) {
+Client *net_client_spawn(Player *const player, uint16_t const port) {
+    Client *const data = malloc(sizeof (Client));
+    if (data == NULL)
+        EXIT_PRINT("Failed to allocate client data");
+
+    data->clnt_state = JOINING;
+    data->serv_addr  = (struct sockaddr_in) {0};
+    data->player     = player;
+
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData))
         EXIT_PRINT("Failed to start WSA");
@@ -1239,12 +1210,25 @@ void net_client_create(uint16_t port, ClientData *data) {
     data->serv_addr.sin_port = htons(port);
     inet_pton(AF_INET, "127.0.0.1", &data->serv_addr.sin_addr);
 
-    data->sender = (HANDLE) _beginthreadex(NULL, 0, (unsigned int __stdcall(*)(void*)) client_thread_sender, data, 0, NULL);
-    if (!data->sender)
+    if (!thread_spawn(&data->sender, (void (*)(void *)) client_thread_sender, data))
         EXIT_PRINT("Failed to create client sender thread");
 
-    data->receiver = (HANDLE) _beginthreadex(NULL, 0, (unsigned int __stdcall(*)(void*)) client_thread_receiver, data, 0, NULL);
-    if (!data->receiver)
+    if (!thread_spawn(&data->receiver, (void (*)(void *)) client_thread_receiver, data))
         EXIT_PRINT("Failed to create client receiver thread");
+
+    return data;
+}
+
+void net_client_close(Client *const data) {
+    if (!thread_is_null(data->sender) && !thread_kill(data->sender))
+        EXIT_PRINT("Failed to close client sender thread");
+
+    if (!thread_is_null(data->receiver) && !thread_kill(data->receiver))
+        EXIT_PRINT("Failed to close client receiver thread");
+
+    if (closesocket(data->clnt_fd))
+        EXIT_PRINT("Failed to close client socket");
+
+    free(data);
 }
 #endif
