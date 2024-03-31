@@ -1,5 +1,97 @@
+#include <time.h>
 #ifdef __linux__
-#error "TODO"
+#include <stdlib.h>
+#include <string.h>
+
+#include <threads.h>
+
+#include "./threads.h"
+#include "../util.h"
+
+static char error_buffer[1024];
+
+#define FAIL(string) { \
+    if (sizeof string > 1024) \
+        EXIT_PRINT("Error message too long for buffer"); \
+    memcpy(error_buffer, string, sizeof string); \
+    return false; \
+}
+
+#define FAIL_WITH_ERROR(string, error) { \
+    snprintf(error_buffer, 1024, string " (code: %d, '%s')", error, strerror(error)); \
+    return false; \
+}
+
+#define FAIL_AND_GET_ERROR(string) { \
+    snprintf(error_buffer, 1024, string " (code: %d, '%s')", errno, strerror(errno)); \
+    return false; \
+}
+
+char *threads_get_error();
+
+bool mutex_init(Mutex *const m) {
+    int const error = pthread_mutex_init(&m->handle, NULL);
+    if (error != 0)
+        FAIL_WITH_ERROR("Failed to initialize mutex", error);
+    return true;
+}
+
+bool mutex_close(Mutex *const m) {
+    int const error = pthread_mutex_destroy(&m->handle);
+    if (error != 0)
+        FAIL_WITH_ERROR("Failed to close mutex", error);
+    return true;
+}
+
+bool mutex_lock(Mutex *const m) {
+    pthread_mutex_lock(&m->handle);
+    // TODO: Error check
+    return true;
+}
+
+bool mutex_unlock(Mutex *const m) {
+    pthread_mutex_unlock(&m->handle);
+    // TODO: Error check
+    return true;
+}
+
+typedef struct {
+    void (*function)(void *);
+    void *context;
+} WrapperContext;
+static void *wrapper(WrapperContext *const c) {
+    c->function(c->context);
+    free(c);
+    return NULL;
+}
+
+bool thread_is_null(Thread const thread) {
+    return thread.handle == THREAD_NULL.handle;
+}
+bool thread_spawn(Thread *const t, void (*const function)(void *context), void *const context) {
+    WrapperContext *const wrapper_context = malloc(sizeof (WrapperContext));
+    *wrapper_context = (WrapperContext) {function, context};
+
+    pthread_create(&t->handle, NULL, (void *(*)(void *)) wrapper, wrapper_context);
+    // TODO: Error check
+    return true;
+}
+
+bool thread_suspend(Thread t);
+bool thread_resume(Thread t);
+
+bool thread_kill(Thread t) {
+    pthread_cancel(t.handle);
+    // TODO: Error check
+    return true;
+}
+
+int thread_sleep_ms(int const ms) {
+    struct timespec const ts = {.tv_sec = 0, .tv_nsec = (long) ms * 1000000};
+    struct timespec rem;
+    thrd_sleep(&ts, &rem);
+    return rem.tv_sec * 1000 + rem.tv_nsec / 1000000;
+}
 #endif
 
 #ifdef _WIN64
@@ -31,7 +123,7 @@ static char error_buffer[1024];
     ); \
     if (nstored == 0) \
         EXIT_PRINT("Failed to format error message"); \
-    snprintf(error_buffer, 1024, string "(code: %lu, '%s')", GetLastError(), last_error); \
+    snprintf(error_buffer, 1024, string " (code: %lu, '%s')", GetLastError(), last_error); \
     LocalFree(last_error); \
     return false; \
 }
@@ -43,7 +135,7 @@ char *threads_get_error() {
 bool mutex_init(Mutex *const m) {
     m->handle = CreateMutex(NULL, false, NULL);
     if (m->handle == NULL)
-        FAIL_AND_GET_LAST_ERROR("Failed toinitialize mutex");
+        FAIL_AND_GET_LAST_ERROR("Failed to initialize mutex");
     return true;
 }
 
