@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdint.h>
 #include <stdbool.h>
 
 #ifdef __linux__
@@ -30,5 +31,6 @@ bool thread_suspend(Thread thread);
 bool thread_resume(Thread thread);
 bool thread_kill(Thread thread);
 
-int thread_sleep_ms(int millis);
+bool thread_sleep_ms(long millis, long *remaining);
+bool time_get_monotonic(long *millis);
 

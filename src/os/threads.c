@@ -1,7 +1,7 @@
-#include <time.h>
 #ifdef __linux__
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #include <threads.h>
 
@@ -27,7 +27,9 @@ static char error_buffer[1024];
     return false; \
 }
 
-char *threads_get_error();
+char *threads_get_error() {
+    return error_buffer;
+}
 
 bool mutex_init(Mutex *const m) {
     int const error = pthread_mutex_init(&m->handle, NULL);
@@ -86,11 +88,22 @@ bool thread_kill(Thread t) {
     return true;
 }
 
-int thread_sleep_ms(int const ms) {
-    struct timespec const ts = {.tv_sec = 0, .tv_nsec = (long) ms * 1000000};
+bool thread_sleep_ms(long const ms, long *const remaining) {
+    struct timespec const ts = {.tv_sec = 0, .tv_nsec = ms * 1000000};
     struct timespec rem;
-    thrd_sleep(&ts, &rem);
-    return rem.tv_sec * 1000 + rem.tv_nsec / 1000000;
+    if (thrd_sleep(&ts, remaining != NULL ? &rem : NULL) != 0)
+        FAIL("Failed to sleep");
+    if (remaining != NULL)
+        *remaining = rem.tv_sec * 1000 + rem.tv_nsec / 1000000;
+    return true;
+}
+
+bool time_get_monotonic(long *const millis) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        FAIL_AND_GET_ERROR("Failed to get time");
+    *millis = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return true;
 }
 #endif
 

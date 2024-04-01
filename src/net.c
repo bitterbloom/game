@@ -18,31 +18,27 @@
 #include <threads.h>
 #include <unistd.h>
 #include <netdb.h>
+#include <poll.h>
 
 #include <fcntl.h>
 #include <time.h>
 
-#include "./os/threads.h"
+#include "./os/sockets.h"
 #elif defined(_WIN64)
 #include <WinSock2.h>
 #include <Ws2tcpip.h>
-
-#include "./os/threads.h"
 #endif
 
 #include <stdnoreturn.h> // must go after windows header files...
 
+#include "./os/threads.h"
 #include "./net.h"
 #include "./util.h"
 
 #define SOCK_ADDR_IN_EQ(a, b) (a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port)
-#define DISCONNECT_TIMEOUT_SEC (5)
-
-#ifdef __linux__
-#define SENDER_DELAY (35)
-#elif defined(_WIN64)
-#define SENDER_DELAY ((DWORD) 35)
-#endif
+#define DISCONNECT_TIMEOUT (5000) // milliseconds
+#define SENDER_DELAY (35)         // milliseconds
+#define POLL_TIMEOUT (1000)       // milliseconds
 
 // TODO: Once this code becomes more stable, consolidate the linux and windows code,
 //       either by using macros or by abstracting over the os-specific code.
@@ -103,12 +99,12 @@ struct Server {
     uint16_t *len;
     Mutex len_mutex;
     clnt_state *clnt_states;
-    time_t *clnt_last;
-    struct sockaddr_in *clnt_addrs;
+    long *clnt_last; // milliseconds
+    Address *clnt_addrs;
     Player *players;
     Thread sender;
-    Thread receiver; // receiver is -1 if not started
-    int serv_fd;
+    Thread receiver;
+    Socket serv_fd;
 };
 
 static void server_thread_sender(Server *const data) {
@@ -120,15 +116,15 @@ static void server_thread_sender(Server *const data) {
     while (true) {
         fflush(stdout);
 
-        thread_sleep_ms(SENDER_DELAY);
+        thread_sleep_ms(SENDER_DELAY, NULL);
 
         /* Check if any clients have disconnected */ {
-            struct timespec ts;
-            if (clock_gettime(CLOCK_MONOTONIC, &ts))
-                EXIT_PRINT("Failed to get time: %s", strerror(errno));
+            long now;
+            if (!time_get_monotonic(&now))
+                EXIT_PRINT("Failed to get time: %s", threads_get_error());
 
             for (uint16_t i = 0; i < *data->len; i++) {
-                if (ts.tv_sec - data->clnt_last[i] > DISCONNECT_TIMEOUT_SEC) {
+                if (now - data->clnt_last[i] > DISCONNECT_TIMEOUT) {
                     printf("Client %s:%d has timed out\n", inet_ntoa(data->clnt_addrs[i].sin_addr), ntohs(data->clnt_addrs[i].sin_port));
 
                     mutex_lock(&data->len_mutex);
@@ -158,65 +154,52 @@ static void server_thread_sender(Server *const data) {
             }
         }
 
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(data->serv_fd, &fds);
-        int const max_fd = data->serv_fd;
+        short ev;
+        if (!socket_poll(data->serv_fd, POLLOUT, &ev, POLL_TIMEOUT))
+            EXIT_PRINT("Failed to poll for write on server socket: %s", sockets_get_error());
 
-        int ready_count = select(max_fd + 1, NULL, &fds, NULL, &(struct timeval) {.tv_sec = 1, .tv_usec = 0}); // blocks
-
-        if (ready_count == -1)
-            EXIT_PRINT("Failed to select: %s", strerror(errno));
-
-        if (ready_count == 0) {
+        if (ev == 0) {
             printf("send loop timed out\n");
             continue;
         }
 
-        if (FD_ISSET(data->serv_fd, &fds)) {
-            switch (data->clnt_states[next_client]) {
-                case JOINING: {
-                    packet->tag = ACCEPT;
-                    packet->a_max = htons(data->max);
-                    packet->a_id = htonl(data->players[next_client].id);
+        switch (data->clnt_states[next_client]) {
+            case JOINING: {
+                packet->tag = ACCEPT;
+                packet->a_max = htons(data->max);
+                packet->a_id = htonl(data->players[next_client].id);
 
-                    DEBUG_PRINT("<<< Sending ACCEPT packet to %s:%d", inet_ntoa(data->clnt_addrs[next_client].sin_addr), ntohs(data->clnt_addrs[next_client].sin_port));
-                } break;
-                case REJOINING: {
-                    // The JOINING state exists so that the server knows it needs to send ACCEPT packets with the player id.
-                    // But when rejoining, the client already knows its id, so the server can just send the POSITIONS packets.
-                    // We therefore don't need to store the REJOINING state on the server.
-                    EXIT_PRINT("Client should not be in REJOINING state on the server");
-                } break;
-                case PLAYING: {
-                    packet->tag = POSITIONS;
-                    packet->p_len = htons(*data->len);
+                DEBUG_PRINT("<<< Sending ACCEPT packet to %s:%d", inet_ntoa(data->clnt_addrs[next_client].sin_addr), ntohs(data->clnt_addrs[next_client].sin_port));
+            } break;
+            case REJOINING: {
+                // The JOINING state exists so that the server knows it needs to send ACCEPT packets with the player id.
+                // But when rejoining, the client already knows its id, so the server can just send the POSITIONS packets.
+                // We therefore don't need to store the REJOINING state on the server.
+                EXIT_PRINT("Client should not be in REJOINING state on the server");
+            } break;
+            case PLAYING: {
+                packet->tag = POSITIONS;
+                packet->p_len = htons(*data->len);
 
-                    for (uint16_t i = 0; i < *data->len; i++) {
-                        packet->p_players[i] = (Player) {
-                            .id = htonl(data->players[i].id),
-                            .pos.x = htonl(data->players[i].pos.x),
-                            .pos.y = htonl(data->players[i].pos.y),
-                        };
-                    }
+                for (uint16_t i = 0; i < *data->len; i++) {
+                    packet->p_players[i] = (Player) {
+                        .id = htonl(data->players[i].id),
+                        .pos.x = htonl(data->players[i].pos.x),
+                        .pos.y = htonl(data->players[i].pos.y),
+                    };
+                }
 
-                    DEBUG_PRINT("<<< Sending POSITIONS packet to %s:%d", inet_ntoa(data->clnt_addrs[next_client].sin_addr), ntohs(data->clnt_addrs[next_client].sin_port));
-                } break;
-            }
-
-            struct sockaddr_in clnt_addr = data->clnt_addrs[next_client];
-            ssize_t nwritten = sendto(data->serv_fd, packet, sizeof (S2CPacket), 0, (struct sockaddr *) &clnt_addr, sizeof clnt_addr);
-            if (nwritten == -1)
-                EXIT_PRINT("Failed to send to client: %s", strerror(errno));
-
-            DEBUG_PRINT("< Send %ld bytes to %s:%d", (long) nwritten, inet_ntoa(clnt_addr.sin_addr), ntohs(clnt_addr.sin_port));
-
-            next_client = (next_client + 1) % *data->len;
-
-            continue;
+                DEBUG_PRINT("<<< Sending POSITIONS packet to %s:%d", inet_ntoa(data->clnt_addrs[next_client].sin_addr), ntohs(data->clnt_addrs[next_client].sin_port));
+            } break;
         }
 
-        EXIT_PRINT("Select returned without socket not ready");
+        Address *clnt_addr = &data->clnt_addrs[next_client];
+        if (!socket_sendto_inet(data->serv_fd, packet, sizeof (S2CPacket), clnt_addr))
+            EXIT_PRINT("Failed to send to client: %s", sockets_get_error());
+
+        DEBUG_PRINT("< Send %ld bytes to %s:%d", sizeof (S2CPacket), inet_ntoa(clnt_addr.sin_addr), ntohs(clnt_addr.sin_port));
+
+        next_client = (next_client + 1) % *data->len;
     }
 
     // never reached
@@ -243,150 +226,135 @@ next_loop:
 
         //thrd_sleep(DELAY, NULL);
 
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(data->serv_fd, &fds);
-        int max_fd = data->serv_fd;
+        short ev;
+        if (!socket_poll(data->serv_fd, POLLIN, &ev, POLL_TIMEOUT))
+            EXIT_PRINT("Failed to poll for read on server socket: %s", sockets_get_error());
 
-        int ready_count = select(max_fd + 1, &fds, NULL, NULL, &(struct timeval) {.tv_sec = 1, .tv_usec = 0}); // blocks
-        if (ready_count == -1)
-            EXIT_PRINT("Failed to select: %s", strerror(errno));
-
-        if (ready_count == 0) {
+        if (ev == 0) {
             printf("receive loop timed out\n");
             continue;
         }
 
-        if (FD_ISSET(data->serv_fd, &fds)) {
-            struct sockaddr_storage clnt_addr_any = {0};
-            socklen_t clnt_addr_any_len = sizeof clnt_addr_any;
-            ssize_t nread = recvfrom(data->serv_fd, &packet, sizeof (C2SPacket), 0, (struct sockaddr *) &clnt_addr_any, &clnt_addr_any_len);
-            if (nread == -1)
-                EXIT_PRINT("Failed to receive from client: %s", strerror(errno));
+        Address clnt_addr;
+        int nread;
+        if (!socket_recvfrom_inet(data->serv_fd, &packet, sizeof (C2SPacket), &nread, &clnt_addr))
+            EXIT_PRINT("Failed to receive from client: %s", sockets_get_error());
 
-            if (clnt_addr_any.ss_family != AF_INET || clnt_addr_any_len != sizeof (struct sockaddr_in))
-                EXIT_PRINT("Received packet from non-IPv4 address");
+        DEBUG_PRINT("> Received %ld bytes from %s:%d", (long) nread, inet_ntoa(clnt_addr.sin_addr), ntohs(clnt_addr.sin_port));
 
-            struct sockaddr_in clnt_addr = *(struct sockaddr_in *) &clnt_addr_any;
+        switch (packet.tag) {
+            case JOIN: {
+                DEBUG_PRINT(">>> Received JOIN packet");
 
-            DEBUG_PRINT("> Received %ld bytes from %s:%d", (long) nread, inet_ntoa(clnt_addr.sin_addr), ntohs(clnt_addr.sin_port));
-
-            switch (packet.tag) {
-                case JOIN: {
-                    DEBUG_PRINT(">>> Received JOIN packet");
-
-                    if (*data->len == data->max) {
-                        printf("Client sent JOIN packet but server is full\n");
-                        goto next_loop;
-                    }
-
-                    uint16_t len = *data->len;
-                    for (uint16_t i = 0; i < len; i++) { // len might have been decremented by the sender thread, but that's okay.
-                        if (SOCK_ADDR_IN_EQ(data->clnt_addrs[i], clnt_addr)) {
-                            printf("Client sent JOIN packet but has already joined\n");
-                            goto next_loop;
-                        }
-                    }
-
-                    struct timespec ts;
-                    if (clock_gettime(CLOCK_MONOTONIC, &ts))
-                        EXIT_PRINT("Failed to get time: %s", strerror(errno));
-
-                    mutex_lock(&data->len_mutex);
-                    len = *data->len; // in case it was changed
-
-                    data->clnt_addrs[len] = clnt_addr;
-                    data->clnt_last[len] = ts.tv_sec;
-                    data->clnt_states[len] = JOINING;
-                    data->players[len] = (Player) {
-                        .id = next_id++,//rand(),
-                        .pos.x = 0,
-                        .pos.y = 0,
-                    };
-                    *data->len = len + 1;
-                    mutex_unlock(&data->len_mutex);
-
-                    printf("Added player %u\n", data->players[len].id);
-                } break;
-                case REJOIN: {
-                    uint32_t id = ntohl(packet.r_player.id);
-
-                    DEBUG_PRINT(">>> Received REJOIN packet");
-
-                    if (*data->len == data->max) {
-                        printf("Client sent REJOIN packet but server is full\n");
-                        goto next_loop;
-                    }
-
-                    uint16_t len = *data->len;
-                    for (uint16_t i = 0; i < len; i++) {
-                        if (data->players[i].id == id) {
-                            if (!SOCK_ADDR_IN_EQ(data->clnt_addrs[i], clnt_addr)) {
-                                printf("Client sent REJOIN packet but is already joined with a different address\n");
-                                goto next_loop;
-                            }
-
-                            printf("Client sent REJOIN packet and is already joined\n");
-                            goto next_loop;
-                        }
-                    }
-
-                    struct timespec ts;
-                    if (clock_gettime(CLOCK_MONOTONIC, &ts))
-                        EXIT_PRINT("Failed to get time: %s", strerror(errno));
-
-                    mutex_lock(&data->len_mutex);
-                    len = *data->len; // in case it was changed
-
-                    data->clnt_addrs[len] = clnt_addr;
-                    data->clnt_last[len] = ts.tv_sec;
-                    data->clnt_states[len] = PLAYING; // We don't need to send ACCEPT packets, so just go straight to PLAYING.
-                    data->players[len] = (Player) {
-                        .id = id,
-                        .pos.x = ntohl(packet.r_player.pos.x),
-                        .pos.y = ntohl(packet.r_player.pos.y),
-                    };
-                    *data->len = len + 1;
-                    mutex_unlock(&data->len_mutex);
-
-                    printf("Rejoined player %u\n", id);
-                } break;
-                case POSITION: {
-                    uint16_t len = *data->len;
-                    for (uint16_t i = 0; i < len; i++) {
-                        if (SOCK_ADDR_IN_EQ(data->clnt_addrs[i], clnt_addr)) {
-                            uint32_t id = data->players[i].id;
-
-                            DEBUG_PRINT(">>> Received POSITION packet for player %u", id);
-                    
-                            struct timespec ts;
-                            if (clock_gettime(CLOCK_MONOTONIC, &ts))
-                                EXIT_PRINT("Failed to get time: %s", strerror(errno));
-
-                            // If the sender thread disconnects the client,
-                            // then this will set the values to the wrong client.
-                            // TODO: Is this a problem?
-
-                            data->clnt_last[i] = ts.tv_sec;
-                            data->clnt_states[i] = PLAYING;
-                            data->players[i].pos.x = ntohl(packet.p_pos.x);
-                            data->players[i].pos.y = ntohl(packet.p_pos.y);
-                            
-                            DEBUG_PRINT("Updated player %u position to (%u, %u)", id, data->players[i].pos.x, data->players[i].pos.y);
-                        }
-                    }
-
+                if (*data->len == data->max) {
+                    printf("Client sent JOIN packet but server is full\n");
                     goto next_loop;
-                } break;
-            }
+                }
 
-            // if first connection
-            if (*data->len == 1) {
-                if (!thread_spawn(&data->sender, (void (*)(void *)) server_thread_sender, data))
-                    EXIT_PRINT("Failed to create server sender thread: %s", strerror(errno));
-            }
+                uint16_t len = *data->len;
+                for (uint16_t i = 0; i < len; i++) { // len might have been decremented by the sender thread, but that's okay.
+                    if (SOCK_ADDR_IN_EQ(data->clnt_addrs[i], clnt_addr)) {
+                        printf("Client sent JOIN packet but has already joined\n");
+                        goto next_loop;
+                    }
+                }
 
-            ready_count--;
+                long now;
+                if (!time_get_monotonic(&now))
+                    EXIT_PRINT("Failed to get time: %s", threads_get_error());
+
+                mutex_lock(&data->len_mutex);
+                len = *data->len; // in case it was changed
+
+                data->clnt_addrs[len]  = clnt_addr;
+                data->clnt_last[len]   = now;
+                data->clnt_states[len] = JOINING;
+                data->players[len]     = (Player) {
+                    .id = next_id++,//rand(),
+                    .pos.x = 0,
+                    .pos.y = 0,
+                };
+                *data->len = len + 1;
+                mutex_unlock(&data->len_mutex);
+
+                printf("Added player %u\n", data->players[len].id);
+            } break;
+            case REJOIN: {
+                uint32_t id = ntohl(packet.r_player.id);
+
+                DEBUG_PRINT(">>> Received REJOIN packet");
+
+                if (*data->len == data->max) {
+                    printf("Client sent REJOIN packet but server is full\n");
+                    goto next_loop;
+                }
+
+                uint16_t len = *data->len;
+                for (uint16_t i = 0; i < len; i++) {
+                    if (data->players[i].id == id) {
+                        if (!SOCK_ADDR_IN_EQ(data->clnt_addrs[i], clnt_addr)) {
+                            printf("Client sent REJOIN packet but is already joined with a different address\n");
+                            goto next_loop;
+                        }
+
+                        printf("Client sent REJOIN packet and is already joined\n");
+                        goto next_loop;
+                    }
+                }
+
+                long now;
+                if (!time_get_monotonic(&now))
+                    EXIT_PRINT("Failed to get time: %s", threads_get_error());
+
+                mutex_lock(&data->len_mutex);
+                len = *data->len; // in case it was changed
+
+                data->clnt_addrs[len]  = clnt_addr;
+                data->clnt_last[len]   = now;
+                data->clnt_states[len] = PLAYING; // We don't need to send ACCEPT packets, so just go straight to PLAYING.
+                data->players[len]     = (Player) {
+                    .id = id,
+                    .pos.x = ntohl(packet.r_player.pos.x),
+                    .pos.y = ntohl(packet.r_player.pos.y),
+                };
+                *data->len = len + 1;
+                mutex_unlock(&data->len_mutex);
+
+                printf("Rejoined player %u\n", id);
+            } break;
+            case POSITION: {
+                uint16_t len = *data->len;
+                for (uint16_t i = 0; i < len; i++) {
+                    if (SOCK_ADDR_IN_EQ(data->clnt_addrs[i], clnt_addr)) {
+                        uint32_t id = data->players[i].id;
+
+                        DEBUG_PRINT(">>> Received POSITION packet for player %u", id);
+                
+                        long now;
+                        if (!time_get_monotonic(&now))
+                            EXIT_PRINT("Failed to get time: %s", threads_get_error());
+
+                        // If the sender thread disconnects the client,
+                        // then this will set the values to the wrong client.
+                        // TODO: Is this a problem?
+
+                        data->clnt_last[i]   = now;
+                        data->clnt_states[i] = PLAYING;
+                        data->players[i].pos.x = ntohl(packet.p_pos.x);
+                        data->players[i].pos.y = ntohl(packet.p_pos.y);
+                        
+                        DEBUG_PRINT("Updated player %u position to (%u, %u)", id, data->players[i].pos.x, data->players[i].pos.y);
+                    }
+                }
+
+                goto next_loop;
+            } break;
+        }
+
+        // if first connection
+        if (*data->len == 1) {
+            if (!thread_spawn(&data->sender, (void (*)(void *)) server_thread_sender, data))
+                EXIT_PRINT("Failed to create server sender thread: %s", threads_get_error());
         }
     }
 }
@@ -396,46 +364,34 @@ Server *net_server_spawn(Player *const players, uint16_t *const len_players, uin
         EXIT_PRINT("Player list must have at least one player");
 
     Server *const data = malloc(sizeof (Server));
-    if (data == NULL)
-        EXIT_PRINT("Failed to allocate server data");
 
     data->max = max_players;
     data->len = len_players;
     data->players = players;
 
     if (!mutex_init(&data->len_mutex))
-        EXIT_PRINT("Failed to initialize player list mutex: %s", strerror(errno));
+        EXIT_PRINT("Failed to initialize player list mutex: %s", threads_get_error());
 
     data->clnt_states = malloc(max_players * sizeof (clnt_state));
-    if (data->clnt_states == NULL)
-        EXIT_PRINT("Failed to allocate client states");
-
-    data->clnt_last = malloc(max_players * sizeof (time_t));
-    if (data->clnt_last == NULL)
-        EXIT_PRINT("Failed to allocate client last times");
-
-    data->clnt_addrs = malloc(max_players * sizeof (struct sockaddr_in));
-    if (data->clnt_addrs == NULL)
-        EXIT_PRINT("Failed to allocate client addresses");
+    data->clnt_last   = malloc(max_players * sizeof (time_t));
+    data->clnt_addrs  = malloc(max_players * sizeof (Address ));
 
     printf("creating server socket\n");
-    data->serv_fd = socket(AF_INET, SOCK_DGRAM, PF_UNSPEC);
-    if (data->serv_fd == -1)
-        EXIT_PRINT("Failed to create socket: %s", strerror(errno));
-    printf("created server socket = %d\n", data->serv_fd);
+    if (!socket_init_udp(&data->serv_fd))
+        EXIT_PRINT("Failed to create socket: %s", sockets_get_error());
 
     printf("binding server socket to port %d\n", (int) port);
-    struct sockaddr_in serv_addr = {0};
+    Address serv_addr = {0};
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(port);
 
-    if (bind(data->serv_fd, (struct sockaddr*) &serv_addr, sizeof (serv_addr)))
-        EXIT_PRINT("Failed to bind socket: %s", strerror(errno));
+    if (!socket_bind(data->serv_fd,  &serv_addr))
+        EXIT_PRINT("Failed to bind socket: %s", sockets_get_error());
     printf("server socket bound to port %d\n", (int) ntohs(serv_addr.sin_port));
 
     if (!thread_spawn(&data->receiver, (void (*)(void *)) server_thread_receiver, data))
-        EXIT_PRINT("Failed to create server receiver thread: %s", strerror(errno));
+        EXIT_PRINT("Failed to create server receiver thread: %s", threads_get_error());
 
     data->sender = THREAD_NULL;
 
@@ -444,28 +400,30 @@ Server *net_server_spawn(Player *const players, uint16_t *const len_players, uin
 
 void net_server_close(Server *const data) {
     if (!thread_is_null(data->sender) && !thread_kill(data->sender))
-        EXIT_PRINT("Failed to send cancel request to server sender thread: %s", strerror(errno));
+        EXIT_PRINT("Failed to send cancel request to server sender thread: %s", threads_get_error());
 
     if (!thread_is_null(data->receiver) && !thread_kill(data->receiver))
-        EXIT_PRINT("Failed to send cancel request to server receiver thread: %s", strerror(errno));
+        EXIT_PRINT("Failed to send cancel request to server receiver thread: %s", threads_get_error());
 
     if (!mutex_close(&data->len_mutex))
-        EXIT_PRINT("Failed to destroy server mutex");
+        EXIT_PRINT("Failed to destroy server mutex: %s", threads_get_error());
+
+    if (!socket_close(data->serv_fd))
+        EXIT_PRINT("Failed to close server socket: %s", threads_get_error());
 
     free(data->clnt_states);
     free(data->clnt_last);
     free(data->clnt_addrs);
-    close(data->serv_fd);
     free(data);
 }
 
 struct Client {
     clnt_state clnt_state;
-    struct sockaddr_in serv_addr;
+    Address serv_addr;
     Player *player;
     Thread sender;
     Thread receiver;
-    int clnt_fd;
+    Socket clnt_fd;
 };
 
 static noreturn void client_thread_sender(Client *const data) {
@@ -476,59 +434,51 @@ static noreturn void client_thread_sender(Client *const data) {
     while (true) {
         fflush(stdout);
 
-        thread_sleep_ms(SENDER_DELAY);
+        thread_sleep_ms(SENDER_DELAY, NULL);
 
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(data->clnt_fd, &fds);
-        int max_fd = data->clnt_fd;
+        short ev;
+        if (!socket_poll(data->clnt_fd, POLLOUT, &ev, POLL_TIMEOUT))
+            EXIT_PRINT("Failed to poll for write on client socket: %s", sockets_get_error());
 
-        int ready_count = select(max_fd + 1, NULL, &fds, NULL, &(struct timeval) {.tv_sec = 1, .tv_usec = 0}); // blocks
-        if (ready_count == -1)
-            EXIT_PRINT("Failed to select: %s", strerror(errno));
-
-        if (ready_count == 0) {
+        if (ev == 0) {
             printf("send loop timed out\n");
             continue;
         }
 
-        if (FD_ISSET(data->clnt_fd, &fds)) {
-            size_t packet_size = sizeof (C2SPacket);
+        size_t packet_size = sizeof (C2SPacket);
 
-            switch (data->clnt_state) {
-                case JOINING: {
-                    packet_size = sizeof (PacketTag);
-                    packet.tag = JOIN;
+        switch (data->clnt_state) {
+            case JOINING: {
+                packet_size = sizeof (PacketTag);
+                packet.tag = JOIN;
 
-                    DEBUG_PRINT("<<< Sending JOIN packet to %s:%d", inet_ntoa(data->serv_addr.sin_addr), ntohs(data->serv_addr.sin_port));
-                } break;
-                case REJOINING: {
-                    packet_size = sizeof (C2SPacket);
-                    packet.tag = REJOIN;
-                    packet.r_player = (Player) {
-                        .id = htonl(data->player->id),
-                        .pos.x = htonl(data->player->pos.x),
-                        .pos.y = htonl(data->player->pos.y),
-                    };
+                DEBUG_PRINT("<<< Sending JOIN packet to %s:%d", inet_ntoa(data->serv_addr.sin_addr), ntohs(data->serv_addr.sin_port));
+            } break;
+            case REJOINING: {
+                packet_size = sizeof (C2SPacket);
+                packet.tag = REJOIN;
+                packet.r_player = (Player) {
+                    .id = htonl(data->player->id),
+                    .pos.x = htonl(data->player->pos.x),
+                    .pos.y = htonl(data->player->pos.y),
+                };
 
-                    DEBUG_PRINT("<<< Sending REJOIN packet to %s:%d", inet_ntoa(data->serv_addr.sin_addr), ntohs(data->serv_addr.sin_port));
-                } break;
-                case PLAYING: {
-                    //packet_size = sizeof (C2SPacket);
-                    packet.tag = POSITION;
-                    packet.p_pos.x = htonl(data->player->pos.x);
-                    packet.p_pos.y = htonl(data->player->pos.y);
+                DEBUG_PRINT("<<< Sending REJOIN packet to %s:%d", inet_ntoa(data->serv_addr.sin_addr), ntohs(data->serv_addr.sin_port));
+            } break;
+            case PLAYING: {
+                //packet_size = sizeof (C2SPacket);
+                packet.tag = POSITION;
+                packet.p_pos.x = htonl(data->player->pos.x);
+                packet.p_pos.y = htonl(data->player->pos.y);
 
-                    DEBUG_PRINT("<<< Sending POSITION packet to %s:%d", inet_ntoa(data->serv_addr.sin_addr), ntohs(data->serv_addr.sin_port));
-                } break;
-            }
-
-            ssize_t nwritten = sendto(data->clnt_fd, &packet, packet_size, 0, (struct sockaddr *) &data->serv_addr, sizeof data->serv_addr);
-            if (nwritten == -1)
-                EXIT_PRINT("Failed to send to server: %s", strerror(errno));
-
-            DEBUG_PRINT("< Send %ld bytes to %s:%d", (long) nwritten, inet_ntoa(data->serv_addr.sin_addr), ntohs(data->serv_addr.sin_port));
+                DEBUG_PRINT("<<< Sending POSITION packet to %s:%d", inet_ntoa(data->serv_addr.sin_addr), ntohs(data->serv_addr.sin_port));
+            } break;
         }
+
+        if (!socket_sendto_inet(data->clnt_fd, &packet, packet_size, &data->serv_addr))
+            EXIT_PRINT("Failed to send to server: %s", sockets_get_error());
+
+        DEBUG_PRINT("< Send %ld bytes to %s:%d", packet_size, inet_ntoa(data->serv_addr.sin_addr), ntohs(data->serv_addr.sin_port));
     }
 }
 
@@ -545,62 +495,49 @@ next_loop:
 
         // thrd_sleep(SENDER_DELAY, NULL);
 
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(data->clnt_fd, &fds);
-        int max_fd = data->clnt_fd;
+        short ev;
+        if (!socket_poll(data->clnt_fd, POLLIN, &ev, DISCONNECT_TIMEOUT))
+            EXIT_PRINT("Failed to poll for read on client socket: %s", sockets_get_error());
 
-        int ready_count = select(max_fd + 1, &fds, NULL, NULL, &(struct timeval) {.tv_sec = DISCONNECT_TIMEOUT_SEC, .tv_usec = 0}); // blocks
-        if (ready_count == -1)
-            EXIT_PRINT("Failed to select: %s", strerror(errno));
-
-        if (ready_count == 0) {
+        if (ev == 0) {
             printf("receive loop timed out\n");
             data->clnt_state = REJOINING;
             goto next_loop;
         }
 
-        if (FD_ISSET(data->clnt_fd, &fds)) {
-            struct sockaddr_storage serv_addr_any = {0};
-            socklen_t serv_addr_any_len = sizeof serv_addr_any;
-            ssize_t nread = recvfrom(data->clnt_fd, packet, sizeof (S2CPacket) + players_len * sizeof (Player), 0, (struct sockaddr *) &serv_addr_any, &serv_addr_any_len);
-            if (nread == -1)
-                EXIT_PRINT("Failed to receive from server: %s", strerror(errno));
+        Address serv_addr;
+        int nread;
+        if (!socket_recvfrom_inet(data->clnt_fd, packet, sizeof (S2CPacket) + players_len * sizeof (Player), &nread, &serv_addr))
+            EXIT_PRINT("Failed to receive from server: %s", sockets_get_error());
 
-            if (serv_addr_any.ss_family != AF_INET || serv_addr_any_len != sizeof (struct sockaddr_in))
-                EXIT_PRINT("Received packet from non-IPv4 address");
+        DEBUG_PRINT("> Received %ld bytes from %s:%d", (long) nread, inet_ntoa(serv_addr.sin_addr), ntohs(serv_addr.sin_port));
 
-            struct sockaddr_in serv_addr = *(struct sockaddr_in *) &serv_addr_any;
+        switch (packet->tag) {
+            case ACCEPT: {
+                DEBUG_PRINT(">>> Received ACCEPT packet with id %u", data->player->id);
 
-            DEBUG_PRINT("> Received %ld bytes from %s:%d", (long) nread, inet_ntoa(serv_addr.sin_addr), ntohs(serv_addr.sin_port));
+                if (data->clnt_state != JOINING) {
+                    printf("Received ACCEPT packet but is not joining\n");
+                    continue;
+                }
+                players_max = ntohs(packet->a_max);
+                data->player->id = ntohl(packet->a_id);
+                data->clnt_state = PLAYING;
 
-            switch (packet->tag) {
-                case ACCEPT: {
-                    DEBUG_PRINT(">>> Received ACCEPT packet with id %u", data->player->id);
+                packet = realloc(packet, sizeof (S2CPacket) + players_max * sizeof (Player));
+            } break;
+            case POSITIONS: {
+                DEBUG_PRINT(">>> Received POSITIONS packet with %u players", players_len);
 
-                    if (data->clnt_state != JOINING) {
-                        printf("Received ACCEPT packet but is not joining\n");
-                        continue;
-                    }
-                    players_max = ntohs(packet->a_max);
-                    data->player->id = ntohl(packet->a_id);
-                    data->clnt_state = PLAYING;
+                if (data->clnt_state != PLAYING && data->clnt_state != REJOINING)
+                    EXIT_PRINT("Received POSITIONS packet but is not playing or rejoining");
 
-                    packet = realloc(packet, sizeof (S2CPacket) + players_max * sizeof (Player));
-                } break;
-                case POSITIONS: {
-                    DEBUG_PRINT(">>> Received POSITIONS packet with %u players", players_len);
+                data->clnt_state = PLAYING;
 
-                    if (data->clnt_state != PLAYING && data->clnt_state != REJOINING)
-                        EXIT_PRINT("Received POSITIONS packet but is not playing or rejoining");
+                players_len = ntohs(packet->p_len);
 
-                    data->clnt_state = PLAYING;
-
-                    players_len = ntohs(packet->p_len);
-
-                    // TODO: Do something with the data
-                } break;
-            }
+                // TODO: Do something with the data
+            } break;
         }
     }
 
@@ -610,41 +547,39 @@ next_loop:
 
 Client *net_client_spawn(Player *const player, uint16_t const port) {
     Client *data = malloc(sizeof (Client));
-    if (data == NULL)
-        EXIT_PRINT("Failed to allocate client data");
 
     data->clnt_state = JOINING;
     data->player     = player;
 
     printf("creating client socket\n");
-    data->clnt_fd = socket(PF_INET, SOCK_DGRAM, PF_UNSPEC);
-    if (data->clnt_fd == -1)
-        EXIT_PRINT("Failed to create socket: %s", strerror(errno));
-    printf("client socket created = %d\n", data->clnt_fd);
+    if (!socket_init_udp(&data->clnt_fd))
+        EXIT_PRINT("Failed to create socket: %s", sockets_get_error());
 
-    printf("connecting client socket to port %d\n", (int) port);
-    data->serv_addr = (struct sockaddr_in) {0};
+    printf("setting server address to port %d\n", (int) port);
+    data->serv_addr = (Address ) {0};
     data->serv_addr.sin_family = AF_INET;
     data->serv_addr.sin_port = htons(port);
     inet_pton(AF_INET, "127.0.0.1", &data->serv_addr.sin_addr);
 
     if (!thread_spawn(&data->sender, (void (*)(void *)) client_thread_sender, data))
-        EXIT_PRINT("Failed to create client sender thread: %s", strerror(errno));
+        EXIT_PRINT("Failed to create client sender thread: %s", threads_get_error());
 
     if (!thread_spawn(&data->receiver, (void (*)(void *)) client_thread_receiver, data))
-        EXIT_PRINT("Failed to create client receiver thread: %s", strerror(errno));
+        EXIT_PRINT("Failed to create client receiver thread: %s", threads_get_error());
 
     return data;
 }
 
 void net_client_close(Client *const data) {
     if (!thread_is_null(data->sender) && !thread_kill(data->sender))
-        EXIT_PRINT("Failed to send cancel request to client sender thread: %s", strerror(errno));
+        EXIT_PRINT("Failed to send cancel request to client sender thread: %s", threads_get_error());
 
     if (!thread_is_null(data->receiver) && !thread_kill(data->receiver))
-        EXIT_PRINT("Failed to send cancel request to client receiver thread: %s", strerror(errno));
+        EXIT_PRINT("Failed to send cancel request to client receiver thread: %s", threads_get_error());
 
-    close(data->clnt_fd);
+    if (!socket_close(data->clnt_fd))
+        EXIT_PRINT("Failed to close client socket: %s", sockets_get_error());
+
     free(data);
 }
 #elif defined(_WIN64)
