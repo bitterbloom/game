@@ -9,7 +9,7 @@ pkgs.stdenv.mkDerivation {
 
   nativeBuildInputs = with pkgs; [
     gnumake
-    clang_17
+    gcc13
     raylib
   ];
 

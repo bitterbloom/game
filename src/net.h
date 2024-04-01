@@ -2,35 +2,27 @@
 
 #include "player.h"
 
-typedef struct ServerData ServerData;
+typedef struct Server Server;
 
 #if !defined(HOTRELOADING) || !defined(__linux__)
-ServerData *net_server_data_new(Player *players, uint16_t *len_players, uint16_t max_players);
+Server *net_server_spawn(Player *players, uint16_t *len_players, uint16_t max_players, uint16_t port);
 
-void net_server_data_delete(ServerData *data);
-
-void net_server_create(uint16_t port, ServerData *data);
+void net_server_close(Server *data);
 #else
-typedef ServerData *net_server_data_new_t(Player *players, uint16_t *len_players, uint16_t max_players);
+typedef ServerData *net_server_spawn_t(Player *players, uint16_t *len_players, uint16_t max_players, uint16_t);
 
-typedef void net_server_data_delete_t(ServerData *data);
-
-typedef void net_server_create_t(uint16_t port, ServerData *data);
+typedef void net_server_close_t(ServerData *data);
 #endif
 
-typedef struct ClientData ClientData;
+typedef struct Client Client;
 
 #if !defined(HOTRELOADING) || !defined(__linux__)
-ClientData *net_client_data_new(Player *player);
+Client *net_client_spawn(Player *player, uint16_t port);
 
-void net_client_data_delete(ClientData *data);
-
-void net_client_create(uint16_t port, ClientData *data);
+void net_client_close(Client *data);
 #else
-typedef ClientData *net_client_data_new_t(Player *player);
+typedef ClientData *net_client_spawn_t(Player *player, uint16_t port);
 
-typedef void net_client_data_delete_t(ClientData *data);
-
-typedef void net_client_create_t(uint16_t port, ClientData *data);
+typedef void net_client_close_t(ClientData *data);
 #endif
 

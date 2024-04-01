@@ -24,12 +24,12 @@ struct State {
             bool gs_hosting;
             union {
                 struct { // Server
-                    ServerData *gss_serv_data;
+                    Server *gss_server;
                     uint16_t gss_player_count;
                     Player *gss_players;
                 };
                 struct { // Client
-                    ClientData *gsc_clnt_data;
+                    Client *gsc_client;
                     Player gsc_player;
                 };
             };
@@ -62,7 +62,24 @@ bool game_should_close(Gamestate const *const state) {
 }
 
 void game_close(Gamestate *const state) {
+    switch (state->screen_tag) {
+        case TITLE_SCREEN: {
+            printf("closing game from title screen\n");
+        } break;
+        case GAME_SCREEN: {
+            if (state->gs_hosting) {
+                printf("closing game from game screen as server\n");
+                net_server_close(state->gss_server);
+                free(state->gss_players);
+            }
+            else {
+                printf("closing game from game screen as client\n");
+                net_client_close(state->gsc_client);
+            }
+        } break;
+    }
     free(state);
+    fflush(stdout);
     CloseWindow();
 }
 
@@ -129,15 +146,13 @@ static void goto_game_screen(Gamestate *const state, bool const hosting) {
     if (hosting) {
         state->gss_players = malloc(10 * sizeof (Player));
         state->gss_player_count = 0;
-        state->gss_serv_data = net_server_data_new(state->gss_players, &state->gss_player_count, 10);
-        net_server_create(state->gs_net_port, state->gss_serv_data);
+        state->gss_server = net_server_spawn(state->gss_players, &state->gss_player_count, 10, state->gs_net_port);
     }
     else {
         state->gsc_player.id = 0;
         state->gsc_player.pos.x = 0;
         state->gsc_player.pos.y = 0;
-        state->gsc_clnt_data = net_client_data_new(&state->gsc_player);
-        net_client_create(state->gs_net_port, state->gsc_clnt_data);
+        state->gsc_client = net_client_spawn(&state->gsc_player, state->gs_net_port);
     }
 }
 

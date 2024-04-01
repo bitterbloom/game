@@ -1,4 +1,4 @@
-CC ?= clang
+CC ?= gcc
 CFLAGS ?= -Wall
 
 ifeq ($(OS),Windows_NT)
@@ -32,7 +32,7 @@ build: src/*
 	$(if $(_CFLAGS),$(),$(if $(_WINDOWS),$(error Please set RAYLIB_PATH to the path of your Raylib installation either by setting it as an environment variable using `set RAYLIB_PATH=path/to/your/raylib/raylib-5.0_win64_mingw-w64` or by using `make RAYLIB_PATH=path/to/your/raylib/raylib-5.0_win64_mingw-w64`),$()))
 	@echo -e "Building executable ..."
 	@mkdir -p bin
-	$(CC) src/main.c src/game.c src/net.c -o bin/main-build $(_CFLAGS)
+	$(CC) src/main.c src/game.c src/net.c src/os/threads.c src/os/sockets.c -o bin/main-build $(_CFLAGS)
 
 run: build
 	@echo -e "Running executable ..."
@@ -42,7 +42,7 @@ debug: src/*
 	$(if $(_CFLAGS),$(),$(if $(_WINDOWS),$(error Please set RAYLIB_PATH to the path of your Raylib installation either by setting it as an environment variable using `set RAYLIB_PATH=path/to/your/raylib/raylib-5.0_win64_mingw-w64` or by using `make RAYLIB_PATH=path/to/your/raylib/raylib-5.0_win64_mingw-w64`),$()))
 	@echo -e "Building executable with debug mode ..."
 	@mkdir -p bin
-	$(CC) src/main.c src/game.c src/net.c -o bin/main-debug $(_CFLAGS) -DDEBUG
+	$(CC) src/main.c src/game.c src/net.c src/os/threads.c src/os/sockets.c -o bin/main-debug $(_CFLAGS) -DDEBUG
 	@echo -e "Running executable ..."
 	@bin/main-debug
 
@@ -55,7 +55,7 @@ _game.so: src/game.c src/net.c
 watch: src/* _game.so
 	@echo -e "Building executable with hot reload mode ..."
 	@mkdir -p bin
-	$(CC) src/net.c -fpic -shared -o bin/net.so $(_CFLAGS)
+	$(CC) src/net.c src/os/threads.c src/os/sockets.c -fpic -shared -o bin/net.so $(_CFLAGS)
 	$(CC) src/main.c src/game.c -o bin/main $(_CFLAGS) -DHOTRELOAD
 	@echo -e "Running executable ..."
 	@bin/main
@@ -68,7 +68,7 @@ _game.so-debug: src/game.c src/net.c
 dev: src/* _game.so-debug
 	@echo -e "Building executable with debug and hot reload mode ..."
 	@mkdir -p bin
-	$(CC) src/net.c -fpic -shared -o bin/net.so $(_CFLAGS)
+	$(CC) src/net.c src/os/threads.c src/os/sockets.c -fpic -shared -o bin/net.so $(_CFLAGS)
 	$(CC) src/main.c src/game.c -o bin/main $(_CFLAGS) -DDEBUG -DHOTRELOAD
 	@echo -e "Running executable ..."
 	@bin/main
