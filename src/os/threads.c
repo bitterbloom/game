@@ -74,27 +74,30 @@ bool thread_spawn(Thread *const t, void (*const function)(void *context), void *
     WrapperContext *const wrapper_context = malloc(sizeof (WrapperContext));
     *wrapper_context = (WrapperContext) {function, context};
 
-    pthread_create(&t->handle, NULL, (void *(*)(void *)) wrapper, wrapper_context);
-    // TODO: Error check
+    int const error = pthread_create(&t->handle, NULL, (void *(*)(void *)) wrapper, wrapper_context);
+    if (error != 0)
+        FAIL_WITH_ERROR("Failed to initialize thread", error);
     return true;
 }
 
-bool thread_suspend(Thread t);
-bool thread_resume(Thread t);
-
-bool thread_kill(Thread t) {
-    pthread_cancel(t.handle);
-    // TODO: Error check
+bool thread_close(Thread t) {
+    int const error = pthread_join(t.handle, NULL);
+    if (error != 0)
+        FAIL_WITH_ERROR("Failed to join thread", error);
     return true;
 }
 
-bool thread_sleep_ms(long const ms, long *const remaining) {
+bool thread_detach(Thread t) {
+    int const error = pthread_detach(t.handle);
+    if (error != 0)
+        FAIL_WITH_ERROR("Failed to detach thread", error);
+    return true;
+}
+
+bool thread_sleep_ms(long const ms) {
     struct timespec const ts = {.tv_sec = 0, .tv_nsec = ms * 1000000};
-    struct timespec rem;
-    if (thrd_sleep(&ts, remaining != NULL ? &rem : NULL) != 0)
+    if (thrd_sleep(&ts, NULL) != 0)
         FAIL("Failed to sleep");
-    if (remaining != NULL)
-        *remaining = rem.tv_sec * 1000 + rem.tv_nsec / 1000000;
     return true;
 }
 
@@ -205,21 +208,17 @@ bool thread_spawn(Thread *const t, void (*const function)(void *), void *const c
     return true;
 }
 
-bool thread_join(Thread t) {
+bool thread_close(Thread t) {
     if (WaitForSingleObject(t.handle, INFINITE) != WAIT_OBJECT_0)
         FAIL_AND_GET_LAST_ERROR("Failed to join thread");
+    if (CloseHandle(t.handle) == 0)
+        FAIL_AND_GET_LAST_ERROR("Failed to close thread");
     return true;
 }
 
-bool thread_suspend(Thread t) {
-    if (SuspendThread(t.handle) == (DWORD) -1)
-        FAIL_AND_GET_LAST_ERROR("Failed to suspend thread");
-    return true;
-}
-
-bool thread_resume(Thread t) {
-    if (ResumeThread(t.handle) == (DWORD) -1)
-        FAIL_AND_GET_LAST_ERROR("Failed to resume thread");
+bool thread_detach(Thread t) {
+    if (CloseHandle(t.handle) == 0)
+        FAIL_AND_GET_LAST_ERROR("Failed to close thread");
     return true;
 }
 

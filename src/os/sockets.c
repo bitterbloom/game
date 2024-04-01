@@ -26,6 +26,14 @@ char *sockets_get_error() {
     return error_buffer;
 }
 
+bool socket_startup() {
+    return true;
+}
+
+bool socket_cleanup() {
+    return true;
+}
+
 bool socket_init_udp(Socket *const s) {
     s->socket = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, AF_UNSPEC);
     if (s->socket == -1)

@@ -27,10 +27,11 @@ bool mutex_unlock(Mutex *mutex);
 bool thread_is_null(Thread thread);
 bool thread_spawn(Thread *thread, void function(void *constext), void *context);
 
-bool thread_join(Thread thread);
+// Waits for the thread to finish execution and closes it
+bool thread_close(Thread thread);
 
-bool thread_suspend(Thread thread);
-bool thread_resume(Thread thread);
+// A detached thread will close itself automatically once it finishes execution
+bool thread_detach(Thread thread);
 
 bool thread_sleep_ms(long millis);
 bool time_get_monotonic(long *millis);

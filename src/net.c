@@ -4,46 +4,22 @@
 #endif
 
 #include <stdlib.h>
-#include <stdio.h>
-#include <stdbool.h>
-#include <string.h>
-#include <ctype.h>
-#include <errno.h>
 
 #ifdef __linux__
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <pthread.h>
-#include <threads.h>
-#include <unistd.h>
-#include <netdb.h>
 #include <poll.h>
-
-#include <fcntl.h>
-#include <time.h>
-
 #elif defined(_WIN64)
 #include <Ws2tcpip.h>
 #endif
 
-#include <stdnoreturn.h> // must go after windows header files...
-
-#include "./os/sockets.h"
-#include "./os/threads.h"
 #include "./net.h"
 #include "./util.h"
+#include "./os/sockets.h"
+#include "./os/threads.h"
 
 #define SOCK_ADDR_IN_EQ(a, b) (a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port)
 #define DISCONNECT_TIMEOUT (5000) // milliseconds
 #define SENDER_DELAY (35)         // milliseconds
 #define POLL_TIMEOUT (1000)       // milliseconds
-
-// TODO: Once this code becomes more stable, consolidate the linux and windows code,
-//       either by using macros or by abstracting over the os-specific code.
-
-// TODO: Make the error checks more specific, i.e. use `if (function() == NULL)`
-//       rather than `if (!function())`
 
 typedef enum {
     JOINING,
@@ -159,8 +135,12 @@ static void server_thread_sender(Server *const data) {
                 // So we check it first and then lock and check again.
                 mutex_lock(&data->len_mutex);
                 if (*data->len == 0) {
+                    Thread sender = data->sender;
+                    data->sender = THREAD_NULL; // So we don't attempt to join it
+
                     printf("All clients have disconnected\n");
-                    break; // the lock will be released when the function returns
+                    thread_detach(sender);
+                    goto all_disconnected; // the lock will be released when the function returns
                 }
                 mutex_unlock(&data->len_mutex);
             }
@@ -213,12 +193,15 @@ static void server_thread_sender(Server *const data) {
 
         next_client = (next_client + 1) % *data->len;
     }
+    goto skip_unlock;
+
+all_disconnected:
+    mutex_unlock(&data->len_mutex); // from the `len == 0` check
+skip_unlock:
 
     printf("stopping server sender thread\n");
 
     free(packet);
-    
-    mutex_unlock(&data->len_mutex); // from the `len == 0` check
 }
 
 static void server_thread_receiver(Server *const data) {
@@ -419,10 +402,10 @@ Server *net_server_spawn(Player *const players, uint16_t *const len_players, uin
 void net_server_close(Server *const data) {
     data->should_stop = true;
 
-    if (!thread_is_null(data->sender) && !thread_join(data->sender))
+    if (!thread_is_null(data->sender) && !thread_close(data->sender))
         EXIT_PRINT("Failed to send cancel request to server sender thread: %s", threads_get_error());
 
-    if (!thread_is_null(data->receiver) && !thread_join(data->receiver))
+    if (!thread_is_null(data->receiver) && !thread_close(data->receiver))
         EXIT_PRINT("Failed to send cancel request to server receiver thread: %s", threads_get_error());
 
     if (!mutex_close(&data->len_mutex))
@@ -597,10 +580,10 @@ Client *net_client_spawn(Player *const player, uint16_t const port) {
 void net_client_close(Client *const data) {
     data->should_stop = true;
 
-    if (!thread_is_null(data->sender) && !thread_join(data->sender))
+    if (!thread_is_null(data->sender) && !thread_close(data->sender))
         EXIT_PRINT("Failed to send cancel request to client sender thread: %s", threads_get_error());
 
-    if (!thread_is_null(data->receiver) && !thread_join(data->receiver))
+    if (!thread_is_null(data->receiver) && !thread_close(data->receiver))
         EXIT_PRINT("Failed to send cancel request to client receiver thread: %s", threads_get_error());
 
     if (!socket_close(data->clnt_fd))
