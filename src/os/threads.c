@@ -152,15 +152,15 @@ bool mutex_init(Mutex *const m) {
     return true;
 }
 
-bool mutex_close(Mutex m) {
-    if (CloseHandle(m.handle) == 0)
+bool mutex_close(Mutex *const m) {
+    if (CloseHandle(m->handle) == 0)
         FAIL_AND_GET_LAST_ERROR("Failed to close mutex");
     return true;
 }
 
 // This function blocks execution.
-bool mutex_lock(Mutex m) {
-    switch (WaitForSingleObject(m.handle, INFINITE)) {
+bool mutex_lock(Mutex *const m) {
+    switch (WaitForSingleObject(m->handle, INFINITE)) {
         case WAIT_OBJECT_0:  return true;
         case WAIT_TIMEOUT:   FAIL("Failed to lock mutex (timed out)");
         case WAIT_ABANDONED: FAIL("Failed to lock mutex (owning thread was terminated)");
@@ -169,8 +169,8 @@ bool mutex_lock(Mutex m) {
     }
 }
 
-bool mutex_unlock(Mutex m) {
-    if (ReleaseMutex(m.handle) == 0)
+bool mutex_unlock(Mutex *const m) {
+    if (ReleaseMutex(m->handle) == 0)
         FAIL_AND_GET_LAST_ERROR("Failed to unlock mutex");
     return true;
 }
@@ -205,6 +205,12 @@ bool thread_spawn(Thread *const t, void (*const function)(void *), void *const c
     return true;
 }
 
+bool thread_join(Thread t) {
+    if (WaitForSingleObject(t.handle, INFINITE) != WAIT_OBJECT_0)
+        FAIL_AND_GET_LAST_ERROR("Failed to join thread");
+    return true;
+}
+
 bool thread_suspend(Thread t) {
     if (SuspendThread(t.handle) == (DWORD) -1)
         FAIL_AND_GET_LAST_ERROR("Failed to suspend thread");
@@ -217,11 +223,13 @@ bool thread_resume(Thread t) {
     return true;
 }
 
-bool thread_kill(Thread t) {
-    if (TerminateThread(t.handle, 0) == 0)
-        FAIL_AND_GET_LAST_ERROR("Failed to terminate thread");
-    if (CloseHandle(t.handle) == 0)
-        FAIL_AND_GET_LAST_ERROR("Failed to close thread");
+bool thread_sleep_ms(long const ms) {
+    Sleep((DWORD) ms);
+    return true;
+}
+
+bool time_get_monotonic(long *const millis) {
+    *millis = GetTickCount();
     return true;
 }
 #endif

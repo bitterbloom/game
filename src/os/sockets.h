@@ -9,10 +9,16 @@
 typedef struct { int socket; } Socket;
 typedef struct sockaddr_in Address;
 #elif defined(_WIN64)
+#include <WinSock2.h>
 
+typedef struct { SOCKET socket; } Socket;
+typedef struct sockaddr_in Address;
 #endif
 
 char *sockets_get_error(void);
+
+bool socket_startup();
+bool socket_cleanup();
 
 bool socket_init_udp(Socket *socket);
 bool socket_close(Socket socket);

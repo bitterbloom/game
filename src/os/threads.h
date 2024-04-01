@@ -27,10 +27,11 @@ bool mutex_unlock(Mutex *mutex);
 bool thread_is_null(Thread thread);
 bool thread_spawn(Thread *thread, void function(void *constext), void *context);
 
+bool thread_join(Thread thread);
+
 bool thread_suspend(Thread thread);
 bool thread_resume(Thread thread);
-bool thread_kill(Thread thread);
 
-bool thread_sleep_ms(long millis, long *remaining);
+bool thread_sleep_ms(long millis);
 bool time_get_monotonic(long *millis);
 
